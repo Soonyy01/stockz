@@ -2,6 +2,7 @@
 // If no App ID is set, or Privy cannot load, Stockz silently keeps using the browser wallet (window.ethereum).
 const C = window.FLAPCITY_CONFIG;
 if (C.privyAppId) {
+  window.StockzPrivyStatus = 'loading';
   try {
     const REACT = 'react@18.3.1', DOM = 'react-dom@18.3.1';
     const [React, ReactDOM, Privy, chains] = await Promise.all([
@@ -34,7 +35,8 @@ if (C.privyAppId) {
           },
           _wallets: wallets
         };
-        emit('stockz:privy', { address: w ? w.address : null, authenticated });
+        if (ready) window.StockzPrivyStatus = 'ready';
+        emit('stockz:privy', { address: w ? w.address : null, authenticated, ready });
       }, [ready, authenticated, wallets]);
       return null;
     }
@@ -51,7 +53,9 @@ if (C.privyAppId) {
       }
     }, h(Bridge)));
   } catch (e) {
-    console.warn('[Stockz] Privy could not load, using the browser wallet instead:', e);
+    console.warn('[Stockz] Privy could not load:', e);
     window.StockzPrivy = null;
+    window.StockzPrivyStatus = 'error: ' + ((e && e.message) || String(e));
+    window.dispatchEvent(new CustomEvent('stockz:privy', { detail: { error: window.StockzPrivyStatus } }));
   }
 }

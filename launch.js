@@ -56,7 +56,22 @@ function waitPrivyAddress(ms) {
     window.addEventListener('stockz:privy', onState); window.addEventListener('stockz:privy-login', onLogin);
   });
 }
+function waitPrivyReady(ms) {
+  return new Promise((resolve, reject) => {
+    const ok = () => window.StockzPrivy && window.StockzPrivy.ready;
+    const bad = () => String(window.StockzPrivyStatus || '').startsWith('error');
+    if (ok()) return resolve(); if (bad()) return reject(new Error('Login could not load (' + window.StockzPrivyStatus + ').'));
+    const t = setTimeout(() => { cleanup(); reject(new Error('Login is taking too long to load. Check your connection, and that this site domain is added in the Privy dashboard, then reload.')); }, ms);
+    const on = () => { if (ok()) { cleanup(); resolve(); } else if (bad()) { cleanup(); reject(new Error('Login could not load (' + window.StockzPrivyStatus + ').')); } };
+    function cleanup() { clearTimeout(t); window.removeEventListener('stockz:privy', on); }
+    window.addEventListener('stockz:privy', on);
+  });
+}
 async function connect() {
+  if (C.privyAppId) {
+    try { await waitPrivyReady(25000); }
+    catch (e) { if (!window.ethereum) throw e; console.warn('[Stockz] Privy unavailable, using the browser wallet:', e.message); }
+  }
   const P = window.StockzPrivy;
   let eip1193;
   if (P && P.ready) {
@@ -239,7 +254,8 @@ const cb = $('#connect');
 if (cb) cb.onclick = async () => {
   const P = window.StockzPrivy;
   if (account && P && P.authenticated) { try { await P.logout(); } catch {} account = null; signer = null; cb.textContent = 'Connect wallet'; cb.classList.remove('on'); return; }
-  try { await connect(); showAcct(); } catch (e) { alert(decodeErr(e)); }
+  const prev = cb.textContent; cb.disabled = true; cb.textContent = 'Loading…';
+  try { await connect(); showAcct(); } catch (e) { cb.textContent = prev; alert(decodeErr(e)); } finally { cb.disabled = false; }
 };
 window.addEventListener('stockz:privy', e => { if (account && e.detail && !e.detail.address) { account = null; signer = null; cb.textContent = 'Connect wallet'; cb.classList.remove('on'); } });
 if (window.ethereum && window.ethereum.on) window.ethereum.on('accountsChanged', a => { account = null; signer = null; const b = $('#connect'); if (b) { b.textContent = 'Connect wallet'; b.classList.remove('on'); } });
