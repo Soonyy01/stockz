@@ -1,0 +1,192 @@
+// Minimal, dependency-free BSC reader. Fails closed: any doubt -> throw, never invent data.
+(() => {
+const C = window.FLAPCITY_CONFIG;
+const T_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+const ZERO = "0x0000000000000000000000000000000000000000";
+let rpcIdx = 0;
+
+async function rpc(method, params, tries = 8) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    const url = C.rpcUrls[(rpcIdx + i) % C.rpcUrls.length];
+    try {
+      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 20000);
+      const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, signal: ctl.signal,
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+      clearTimeout(to);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      if (j.error) { const e = new Error(j.error.message || "RPC error"); e.rpc = true; throw e; }
+      rpcIdx = (rpcIdx + i) % C.rpcUrls.length;
+      return j.result;
+    } catch (e) {
+      last = e;
+      if (e.rpc && /range|limit|exceed|too many|too large|results|block/i.test(e.message)) { e.range = true; throw e; } // let caller shrink the range
+      await new Promise(r => setTimeout(r, 400 * (i + 1)));
+    }
+  }
+  throw last || new Error("RPC unreachable");
+}
+const hex = n => "0x" + n.toString(16);
+const num = h => parseInt(h, 16);
+
+let maxSpan = 5000;   // learned from RPC errors such as "limited to a 1000 blocks range"
+async function getLogsChunked(filter, from, to, onLogs, onProgress) {
+  const queue = [];
+  for (let s = from; s <= to; s += maxSpan) queue.push([s, Math.min(to, s + maxSpan - 1)]);
+  let total = queue.length, done = 0;
+  async function worker() {
+    while (queue.length) {
+      const [a, b] = queue.shift();
+      try {
+        const logs = await rpc("eth_getLogs", [{ ...filter, fromBlock: hex(a), toBlock: hex(b) }]);
+        onLogs(logs); done++; onProgress && onProgress(Math.min(1, done / total));
+      } catch (e) {
+        if (e.range && b > a) {
+          const msg = String(e.message).replace(/,/g, "");
+          const m = msg.match(/(\d{2,7})\s*blocks?/i) || msg.match(/blocks?[^0-9]{0,24}(\d{2,7})/i);
+          const lim = m ? parseInt(m[1], 10) : 0;
+          maxSpan = Math.max(10, Math.min(maxSpan, lim > 0 ? lim : Math.floor((b - a + 1) / 2)));
+          const parts = []; for (let s = a; s <= b; s += maxSpan) parts.push([s, Math.min(b, s + maxSpan - 1)]);
+          queue.unshift(...parts); total += parts.length - 1;
+        } else throw e;
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: 3 }, worker));
+}
+
+function decodeCreated(log) {
+  if (!log || log.address.toLowerCase() !== C.portal.toLowerCase()) return null;
+  if (!log.topics || log.topics.length !== 1 || log.topics[0].toLowerCase() !== C.topicTokenCreated) return null;
+  const d = log.data.slice(2); if (d.length < 7 * 64 || d.length % 2) return null;
+  const w = i => d.slice(i * 64, i * 64 + 64);
+  const addr = i => { const x = w(i); if (!/^0{24}/.test(x)) return null; return "0x" + x.slice(24); };
+  const str = off => {
+    const o = parseInt(off, 16) * 2; if (!(o >= 7 * 64) || o + 64 > d.length) return null;
+    const len = parseInt(d.slice(o, o + 64), 16) * 2; if (o + 64 + len > d.length || len > 4000) return null;
+    const bytes = new Uint8Array(len / 2); for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(d.substr(o + 64 + i * 2, 2), 16);
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes).replace(/[\u0000-\u001f\u007f<>]/g, "").trim();
+  };
+  const creator = addr(1), token = addr(3), name = str(w(4)), symbol = str(w(5));
+  if (!creator || !token || name === null || symbol === null) return null;
+  return { token, creator, name: name.slice(0, 32) || "Unnamed", symbol: symbol.slice(0, 12) || "?", ts: num(w(0)), block: num(log.blockNumber), tx: log.transactionHash };
+}
+
+async function init() {
+  const cid = num(await rpc("eth_chainId", []));
+  if (cid !== C.chainId) throw new Error("RPC is on chain " + cid + ", expected " + C.chainId);
+  const code = await rpc("eth_getCode", [C.portal, "latest"]);
+  if (!code || code === "0x") throw new Error("No contract code at the Portal address");
+  const latest = num(await rpc("eth_blockNumber", []));
+  const [bl, bo] = await Promise.all([rpc("eth_getBlockByNumber", [hex(latest), false]), rpc("eth_getBlockByNumber", [hex(latest - 20000), false])]);
+  const spb = (num(bl.timestamp) - num(bo.timestamp)) / 20000;       // seconds per block, measured
+  if (!(spb > 0.2 && spb < 5)) throw new Error("Unexpected block time");
+  return { latest, nowTs: num(bl.timestamp), spb };
+}
+
+async function loadTokens(ctx, onUpdate, onProgress) {
+  const from = Math.max(0, ctx.latest - Math.ceil(C.lookbackHours * 3600 / ctx.spb));
+  const created = [];
+  await getLogsChunked({ address: C.portal, topics: [C.topicTokenCreated] }, from, ctx.latest, logs => {
+    for (const l of logs) { const t = decodeCreated(l); if (t) created.push(t); }
+  }, p => onProgress && onProgress("Reading launches", p));
+  const seen = new Set(); const list = [];
+  created.sort((a, b) => b.block - a.block);
+  for (const t of created) { const k = t.token.toLowerCase(); if (!seen.has(k)) { seen.add(k); list.push({ ...t, id: k, balances: new Map(), transfers: 0, lastBlock: 0, recent: 0, rb: [] }); } }
+  const tokens = list.slice(0, C.maxTokens);
+  onUpdate(tokens, created.length);
+  await detectQuotes(tokens, onUpdate, created.length, onProgress);
+  // Transfer logs -> holders and activity (standard ERC-20 Transfer, batches of 25 tokens)
+  ctx.scanned = ctx.latest;
+  const byId = new Map(tokens.map(t => [t.id, t]));
+  const batches = []; for (let i = 0; i < tokens.length; i += 25) batches.push(tokens.slice(i, i + 25));
+  let bi = 0;
+  for (const b of batches) {
+    const start = Math.min(...b.map(t => t.block));
+    try { await getLogsChunked({ address: b.map(t => t.token), topics: [T_TRANSFER] }, start, ctx.latest, logs => {
+      for (const l of logs) {
+        const t = byId.get(l.address.toLowerCase()); if (!t || !l.topics || l.topics.length !== 3) continue;
+        const f = "0x" + l.topics[1].slice(26), to = "0x" + l.topics[2].slice(26);
+        let v; try { v = BigInt(l.data); } catch { continue; }
+        t.balances.set(f, (t.balances.get(f) || 0n) - v); t.balances.set(to, (t.balances.get(to) || 0n) + v);
+        t.transfers++; const bn = num(l.blockNumber); if (bn > t.lastBlock) t.lastBlock = bn;
+        t.rb.push(bn); if (t.rb.length > 300) t.rb.splice(0, t.rb.length - 300);
+      }
+    }, p => onProgress && onProgress("Reading activity", (bi + p) / batches.length));
+    } catch (e) {
+      // Fail closed for THIS batch only: its holder/activity numbers are unknown, never guessed.
+      for (const t of b) { t.activityError = true; t.balances = new Map(); t.transfers = 0; t.lastBlock = 0; t.recent = 0; t.rb = []; }
+    }
+    bi++; onUpdate(tokens, created.length);
+  }
+  recompute(tokens, ctx);
+  return tokens;
+}
+
+function recompute(tokens, ctx) {
+  const cut = ctx.latest - 900 / ctx.spb;
+  for (const t of tokens) t.recent = (t.rb || []).filter(b => b >= cut).length;
+}
+
+// Incremental update: new launches and new transfers since the last scan. Throws on failure; the caller just retries later.
+async function refresh(ctx, tokens, onUpdate) {
+  const latest = num(await rpc("eth_blockNumber", []));
+  if (latest <= ctx.scanned) return tokens;
+  const bl = await rpc("eth_getBlockByNumber", [hex(latest), false]);
+  const from = ctx.scanned + 1, have = new Set(tokens.map(t => t.id)), fresh = [];
+  await getLogsChunked({ address: C.portal, topics: [C.topicTokenCreated] }, from, latest, logs => {
+    for (const l of logs) { const t = decodeCreated(l); if (t && !have.has(t.token.toLowerCase())) { have.add(t.token.toLowerCase()); fresh.push({ ...t, id: t.token.toLowerCase(), balances: new Map(), transfers: 0, lastBlock: 0, recent: 0, rb: [] }); } }
+  });
+  if (fresh.length) await detectQuotes(fresh, () => {}, 0, null);
+  const all = fresh.sort((a, b) => b.block - a.block).concat(tokens).slice(0, C.maxTokens);
+  const byId = new Map(all.map(t => [t.id, t]));
+  for (let i = 0; i < all.length; i += 25) {
+    const b = all.slice(i, i + 25).filter(t => !t.activityError);
+    if (!b.length) continue;
+    await getLogsChunked({ address: b.map(t => t.token), topics: [T_TRANSFER] }, from, latest, logs => {
+      for (const l of logs) {
+        const t = byId.get(l.address.toLowerCase()); if (!t || !l.topics || l.topics.length !== 3) continue;
+        const f = "0x" + l.topics[1].slice(26), to = "0x" + l.topics[2].slice(26);
+        let v; try { v = BigInt(l.data); } catch { continue; }
+        t.balances.set(f, (t.balances.get(f) || 0n) - v); t.balances.set(to, (t.balances.get(to) || 0n) + v);
+        t.transfers++; const bn = num(l.blockNumber); if (bn > t.lastBlock) t.lastBlock = bn;
+        t.rb.push(bn); if (t.rb.length > 300) t.rb.splice(0, t.rb.length - 300);
+      }
+    });
+  }
+  ctx.latest = latest; ctx.scanned = latest; ctx.nowTs = num(bl.timestamp);
+  recompute(all, ctx);
+  onUpdate && onUpdate(all);
+  return all;
+}
+
+// Pair detection without any event ABI: read the creation transaction and look for a known stock address in its calldata.
+// A token is only assigned a stock when EXACTLY ONE known stock address appears there. Otherwise it stays unpaired.
+async function detectQuotes(tokens, onUpdate, total, onProgress) {
+  const known = (C.stockTokens || []).map(s => ({ t: s.t, word: "000000000000000000000000" + s.address.slice(2).toLowerCase() }));
+  if (!known.length) return;
+  let i = 0, done = 0;
+  async function worker() {
+    while (i < tokens.length) {
+      const t = tokens[i++];
+      try {
+        const tx = await rpc("eth_getTransactionByHash", [t.tx]);
+        if (tx && typeof tx.input === "string") {
+          const inp = tx.input.toLowerCase(), hits = known.filter(k => inp.includes(k.word));
+          if (hits.length === 1) t.quote = hits[0].t;
+        }
+      } catch (e) { /* leave unpaired */ }
+      done++; if (done % 10 === 0) { onProgress && onProgress("Reading pairs", done / tokens.length); onUpdate(tokens, total); }
+    }
+  }
+  await Promise.all(Array.from({ length: 6 }, worker));
+  onUpdate(tokens, total);
+}
+function holders(t) {
+  let n = 0; const skip = new Set([ZERO, C.portal.toLowerCase(), t.token.toLowerCase()]);
+  for (const [a, v] of t.balances) if (v > 0n && !skip.has(a)) n++;
+  return n;
+}
+window.FlapChain = { init, loadTokens, refresh, holders };
+})();

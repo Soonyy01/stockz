@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stockz</title>
+<meta name="description" content="Every token is a building. Every stock is a district. A living city map on BNB Chain.">
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+</head><body>
+<header class="top bev">
+  <div class="brandrow"><a class="logo" href="index.html" aria-label="Stockz home"><img src="logo.png" alt="Stockz" height="46"></a><a class="xlink" href="https://x.com/stockzlat" target="_blank" rel="noopener noreferrer" aria-label="Stockz on X" title="@stockzlat on X"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></a></div>
+  <div class="clocks" id="clocks"></div>
+  <button type="button" class="btn go" id="connect">Connect wallet</button>
+</header>
+
+<div class="stage" id="stage">
+  <div class="viewport" id="viewport"><svg id="map" width="1000" height="635" viewBox="0 60 2000 1300" role="img" aria-label="Stockz map"></svg></div>
+  <div class="zoom"><button class="btn" id="zin" aria-label="Zoom in">+</button><button class="btn" id="zout" aria-label="Zoom out">−</button></div>
+  <div class="panels" id="panels">
+    <div class="win bev" id="modes"><div class="tb">Launch</div><div class="body">
+      <div class="mcards" role="tablist">
+        <button type="button" class="mcard on" id="tabFlap" role="tab" aria-selected="true"><svg viewBox="0 0 16 16" width="34" height="34" shape-rendering="crispEdges" aria-hidden="true"><rect x="5" y="2" width="6" height="13" fill="#ffc61a" stroke="#1d1a16"/><rect x="7" y="0" width="2" height="2" fill="#1d1a16"/><rect x="6" y="4" width="1" height="1" fill="#1d1a16"/><rect x="9" y="4" width="1" height="1" fill="#1d1a16"/><rect x="6" y="7" width="1" height="1" fill="#1d1a16"/><rect x="9" y="7" width="1" height="1" fill="#1d1a16"/><rect x="7" y="11" width="2" height="4" fill="#1d1a16"/></svg><b>1 Pair</b><small>1 token · 1 stock</small></button>
+        <button type="button" class="mcard" id="tabMulti" role="tab" aria-selected="false"><svg viewBox="0 0 16 16" width="34" height="34" shape-rendering="crispEdges" aria-hidden="true"><rect x="0.5" y="7" width="4" height="8" fill="#7fb8ff" stroke="#1d1a16"/><rect x="5.5" y="2" width="5" height="13" fill="#ffc61a" stroke="#1d1a16"/><rect x="11.5" y="5" width="4" height="10" fill="#5fd38d" stroke="#1d1a16"/><rect x="7" y="4" width="1" height="1" fill="#1d1a16"/><rect x="9" y="4" width="1" height="1" fill="#1d1a16"/><rect x="7" y="7" width="1" height="1" fill="#1d1a16"/><rect x="9" y="7" width="1" height="1" fill="#1d1a16"/></svg><b>Multi-pair</b><small>1 token · many stocks</small></button>
+      </div>
+      <div id="modeBody"></div></div></div>
+    <div class="win bev"><div class="tb">Find a stock</div><div class="body"><div class="combo"><input id="find" role="combobox" aria-expanded="false" aria-controls="findList" aria-autocomplete="list" placeholder="Search a stock…" autocomplete="off" spellcheck="false" aria-label="Find a stock"><ul id="findList" class="flist" role="listbox" hidden></ul></div></div></div>
+    <div class="win bev"><div class="tb">City feed</div><div class="body feed" id="feed"><div class="row"><div class="t">Loading from BNB Chain…</div></div></div></div>
+    <div class="win bev"><div class="tb">Market hours</div><div class="body wx" id="mkts"></div></div>
+    <div class="win bev sel" id="sel"><div class="tb">Selected building</div><div class="body" id="selBody"><div class="sub">Click a building on the map.</div></div></div>
+  </div>
+</div>
+
+<div class="tools bev" id="tools"><div class="lbl">Build path</div></div>
+
+
+
+<div class="modal" id="launchModal" hidden role="dialog" aria-modal="true" aria-labelledby="lmTitle">
+  <div class="win bev lm">
+    <div class="tb lmtb"><span id="lmTitle">Build a token</span><button type="button" class="lmx" id="lmClose" aria-label="Close">×</button></div>
+    <form class="body" id="lmForm" novalidate>
+      <div class="tabs" role="tablist"><button type="button" class="btn tab on" id="lmSingle">1 pair</button><button type="button" class="btn tab" id="lmMulti">Multi-pair</button></div>
+      <div class="lmgrid">
+        <label>Name<input id="lmName" maxlength="32" placeholder="Rocket Cat" autocomplete="off" required></label>
+        <label>Ticker<input id="lmSymbol" maxlength="10" placeholder="RCAT" autocomplete="off" required></label>
+      </div>
+      <label>Image (PNG, JPG, WEBP or GIF, max 5 MB)<input id="lmImage" type="file" accept="image/png,image/jpeg,image/webp,image/gif" required></label>
+      <label>Description<textarea id="lmDesc" maxlength="480" rows="2" placeholder="What is your token about?"></textarea></label>
+      <div class="lmgrid3">
+        <label>Website<input id="lmWeb" placeholder="https://"></label>
+        <label>X<input id="lmX" placeholder="https://x.com/…"></label>
+        <label>Telegram<input id="lmTg" placeholder="https://t.me/…"></label>
+      </div>
+      <div id="lmPairs"></div>
+      <button type="submit" class="bigbtn" id="lmGo"><i>▶</i> Launch</button>
+      <div class="mnote">You sign in your own wallet. Every launch is simulated first, so a failing launch never spends BNB.</div>
+      <ol class="lmlog" id="lmLog" aria-live="polite"></ol>
+    </form>
+  </div>
+</div>
+
+<script src="vendor/ethers.umd.min.js"></script>
+<script src="config.js"></script><script src="geo.js"></script><script src="stocks.js"></script><script src="chain.js"></script><script src="app.js"></script><script src="launch.js"></script><script type="module" src="privy.js"></script>
+</body></html>
