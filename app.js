@@ -203,7 +203,7 @@ function render() {
   sign(gDyn, 330, 190, sky.hk.open ? 'Asia, trading now' : 'Asia, night shift', sky.hk.open ? '#fdfaf2' : '#173a57', sky.hk.open ? INK : '#f4efd8', 20);
   sign(gDyn, 1330, 96, sky.us.open ? 'America, trading now' : 'America, market closed', sky.us.open ? '#fdfaf2' : '#173a57', sky.us.open ? INK : '#f4efd8', 20);
   sign(gDyn, ISL.cx, ISL.cy + ISL.ry + 14, 'New Arrivals', '#f4b400', INK, 20);
-  if (!ctx || !tokens.length) { if (STATE.status === 'live') sign(gDyn, ISL.cx, ISL.cy - 10, 'No launches found yet', '#fdfaf2', INK, 22, 'V'); return; }
+  if (!ctx || !tokens.length) { if (STATE.status === 'live') sign(gDyn, ISL.cx, ISL.cy - 10, 'No Stockz launches yet', '#fdfaf2', INK, 22, 'V'); return; }
 
   // sort: best first, put them at the back of the island
   let leader = null, lh = -1;
@@ -284,21 +284,28 @@ function setMode(m) { STATE.mode = m; $('#tabFlap').classList.toggle('on', m ===
   $('#tabFlap').setAttribute('aria-selected', m === 'flap'); $('#tabMulti').setAttribute('aria-selected', m === 'multi'); (m === 'flap' ? modeFlap : modeMulti)(); }
 $('#tabFlap').onclick = () => setMode('flap'); $('#tabMulti').onclick = () => setMode('multi');
 function renderFeed() {
-  const {tokens, ctx} = STATE; const f = $('#feed');
-  if (STATE.status === 'off') { f.innerHTML = '<div class="row"><div class="t">Feed is off while chain data is unavailable.</div></div>'; return; }
-  if (!ctx || !tokens.length) { f.innerHTML = '<div class="row"><div class="t">' + (STATE.status === 'live' ? 'No launches found in the scanned window.' : 'Loading from BNB Chain…') + '</div></div>'; return; }
-  const ev = [];
+  const { tokens, ctx } = STATE, f = $('#feed');
+  if (!ctx || !tokens.length) { f.innerHTML = '<div class="row"><div class="t">' + (STATE.status === 'live' ? 'No launches yet. Tokens launched on Stockz appear here.' : 'Loading launches from BNB Chain…') + '</div></div>'; return; }
+  // launches (a Multi-pair launch = same creator, name and ticker on several stocks, grouped into one line)
+  const groups = new Map();
   for (const t of tokens) {
-    const s = ctx.nowTs - t.ts;
-    ev.push({ s, ico: t._tier === 5 ? '🕸️' : '⛺', txt: `${t.name} ${t._tier === 5 ? 'went quiet' : 'pitched a tent'}`, sub: `${t._onPlot ? t.quote + ' plot' : 'New Arrivals'}, launched ${ago(s)}` });
+    const k = t.creator + '|' + t.name + '|' + t.symbol;
+    const g = groups.get(k) || { name: t.name, symbol: t.symbol, stocks: [], ts: 0 };
+    if (t.quote) g.stocks.push(t.quote); g.ts = Math.max(g.ts, t.ts); groups.set(k, g);
   }
-  const act = tokens.filter(t => t.recent > 0).length;
-  if (act) ev.push({ s: 0, ico: '🎆', txt: `${act} building${act > 1 ? 's' : ''} active right now`, sub: 'Transfers in the last 15 minutes' });
+  const ev = [];
+  for (const g of groups.values()) {
+    const s = ctx.nowTs - g.ts, n = g.stocks.length;
+    ev.push({ s, ico: '🚀', txt: `${g.name} ($${g.symbol}) launched`, sub: `${n > 1 ? 'Multi-pair on ' + n + ' stocks' : n === 1 ? 'Paired with ' + g.stocks[0] : 'New Arrivals'} · ${ago(s)}` });
+  }
+  // landmark announcements
+  for (const t of tokens) if (t._tier === 4) ev.push({ s: -1, ico: '👑', txt: `${t.name} is a Landmark!`, sub: `${t.quote ? t.quote + ' plot' : 'New Arrivals'} · most residents in the city` });
   ev.sort((a, b) => a.s - b.s);
-  f.innerHTML = ev.slice(0, 5).map(e => `<div class="row"><div class="ico">${e.ico}</div><div class="t">${esc(e.txt)}<small>${esc(e.sub)}</small></div></div>`).join('');
+  f.innerHTML = ev.slice(0, 6).map(e => `<div class="row"><div class="ico">${e.ico}</div><div class="t">${esc(e.txt)}<small>${esc(e.sub)}</small></div></div>`).join('');
 }
 function renderClocks() {
-  const s = applySkyLite(); $('#clocks').innerHTML = ['US','HK','KR'].map(k => `<div class="clock"><span class="led" style="background:${s[k].open ? '#4cd964' : '#ff5a4e'}"></span>${MARKETS[k].n} ${s[k].time} ${s[k].open ? 'open' : 'closed'}</div>`).join('');
+  const s = applySkyLite(); const SHORT = { US: 'NY', HK: 'HK', KR: 'SEL' };
+  $('#clocks').innerHTML = ['US','HK','KR'].map(k => `<div class="clock" title="${MARKETS[k].n} ${s[k].open ? 'open' : 'closed'}"><span class="led" style="background:${s[k].open ? '#4cd964' : '#ff5a4e'}"></span><span class="cn">${MARKETS[k].n}</span><span class="cs">${SHORT[k]}</span> ${s[k].time}<span class="co"> ${s[k].open ? 'open' : 'closed'}</span></div>`).join('');
   $('#mkts').innerHTML = [['US','America (US stocks)'],['HK','Asia: China plots'],['KR','Asia: Korea plots']].map(([k,l]) => `<span>${s[k].open ? '☀️' : '🌙'}</span><span>${l}</span><span>${s[k].open ? 'open' : 'closed'}</span>`).join('');
 }
 const applySkyLite = () => ({ US: mstate('US'), HK: mstate('HK'), KR: mstate('KR') });

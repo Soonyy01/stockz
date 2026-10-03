@@ -27,6 +27,27 @@ async function rpc(method, params, tries = 8) {
   }
   throw last || new Error("RPC unreachable");
 }
+async function rpcBatch(calls) {           // [{method, params}] -> results (null on per-call error)
+  for (let i = 0; i < C.rpcUrls.length * 2; i++) {
+    const url = C.rpcUrls[(rpcIdx + i) % C.rpcUrls.length];
+    try {
+      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 25000);
+      const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, signal: ctl.signal,
+        body: JSON.stringify(calls.map((c, id) => ({ jsonrpc: "2.0", id, method: c.method, params: c.params }))) });
+      clearTimeout(to);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      if (!Array.isArray(j)) throw new Error("batch not supported");
+      const out = new Array(calls.length).fill(null);
+      for (const x of j) if (x && typeof x.id === "number" && !x.error) out[x.id] = x.result;
+      return out;
+    } catch (e) { await new Promise(r => setTimeout(r, 300 * (i + 1))); }
+  }
+  // last resort: one by one
+  const out = [];
+  for (const c of calls) { try { out.push(await rpc(c.method, c.params, 3)); } catch { out.push(null); } }
+  return out;
+}
 const hex = n => "0x" + n.toString(16);
 const num = h => parseInt(h, 16);
 
@@ -94,9 +115,9 @@ async function loadTokens(ctx, onUpdate, onProgress) {
   const seen = new Set(); const list = [];
   created.sort((a, b) => b.block - a.block);
   for (const t of created) { const k = t.token.toLowerCase(); if (!seen.has(k)) { seen.add(k); list.push({ ...t, id: k, balances: new Map(), transfers: 0, lastBlock: 0, recent: 0, rb: [] }); } }
-  const tokens = list.slice(0, C.maxTokens);
+  await scanTxs(list, onProgress);
+  const tokens = list.filter(t => t.stockz).slice(0, C.maxTokens);
   onUpdate(tokens, created.length);
-  await detectQuotes(tokens, onUpdate, created.length, onProgress);
   // Transfer logs -> holders and activity (standard ERC-20 Transfer, batches of 25 tokens)
   ctx.scanned = ctx.latest;
   const byId = new Map(tokens.map(t => [t.id, t]));
@@ -138,8 +159,8 @@ async function refresh(ctx, tokens, onUpdate) {
   await getLogsChunked({ address: C.portal, topics: [C.topicTokenCreated] }, from, latest, logs => {
     for (const l of logs) { const t = decodeCreated(l); if (t && !have.has(t.token.toLowerCase())) { have.add(t.token.toLowerCase()); fresh.push({ ...t, id: t.token.toLowerCase(), balances: new Map(), transfers: 0, lastBlock: 0, recent: 0, rb: [] }); } }
   });
-  if (fresh.length) await detectQuotes(fresh, () => {}, 0, null);
-  const all = fresh.sort((a, b) => b.block - a.block).concat(tokens).slice(0, C.maxTokens);
+  if (fresh.length) await scanTxs(fresh, null);
+  const all = fresh.filter(t => t.stockz).sort((a, b) => b.block - a.block).concat(tokens).slice(0, C.maxTokens);
   const byId = new Map(all.map(t => [t.id, t]));
   for (let i = 0; i < all.length; i += 25) {
     const b = all.slice(i, i + 25).filter(t => !t.activityError);
@@ -163,25 +184,24 @@ async function refresh(ctx, tokens, onUpdate) {
 
 // Pair detection without any event ABI: read the creation transaction and look for a known stock address in its calldata.
 // A token is only assigned a stock when EXACTLY ONE known stock address appears there. Otherwise it stays unpaired.
-async function detectQuotes(tokens, onUpdate, total, onProgress) {
+// Stockz launches carry a marker: newTokenV6 called on the Portal with a salt starting with "STKZ" (0x53544b5a).
+// The pair is the one known stock address that appears in the same calldata.
+const STKZ = "53544b5a", SEL_V6 = "0x8cb5772c";
+async function scanTxs(tokens, onProgress) {
   const known = (C.stockTokens || []).map(s => ({ t: s.t, word: "000000000000000000000000" + s.address.slice(2).toLowerCase() }));
-  if (!known.length) return;
-  let i = 0, done = 0;
-  async function worker() {
-    while (i < tokens.length) {
-      const t = tokens[i++];
-      try {
-        const tx = await rpc("eth_getTransactionByHash", [t.tx]);
-        if (tx && typeof tx.input === "string") {
-          const inp = tx.input.toLowerCase(), hits = known.filter(k => inp.includes(k.word));
-          if (hits.length === 1) t.quote = hits[0].t;
-        }
-      } catch (e) { /* leave unpaired */ }
-      done++; if (done % 10 === 0) { onProgress && onProgress("Reading pairs", done / tokens.length); onUpdate(tokens, total); }
-    }
+  const portal = C.portal.toLowerCase();
+  for (let i = 0; i < tokens.length; i += 40) {
+    const part = tokens.slice(i, i + 40);
+    const txs = await rpcBatch(part.map(t => ({ method: "eth_getTransactionByHash", params: [t.tx] })));
+    part.forEach((t, k) => {
+      const tx = txs[k]; if (!tx || typeof tx.input !== "string") return;
+      const inp = tx.input.toLowerCase();
+      const salt = inp.slice(10 + 5 * 64, 10 + 6 * 64);          // tuple head: offset, name, symbol, meta, dexThresh, salt
+      t.stockz = (tx.to || "").toLowerCase() === portal && inp.startsWith(SEL_V6) && salt.startsWith(STKZ);
+      if (t.stockz) { const hits = known.filter(x => inp.includes(x.word)); if (hits.length === 1) t.quote = hits[0].t; }
+    });
+    onProgress && onProgress("Finding Stockz launches", Math.min(1, (i + 40) / tokens.length));
   }
-  await Promise.all(Array.from({ length: 6 }, worker));
-  onUpdate(tokens, total);
 }
 function holders(t) {
   let n = 0; const skip = new Set([ZERO, C.portal.toLowerCase(), t.token.toLowerCase()]);

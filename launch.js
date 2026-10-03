@@ -103,11 +103,12 @@ async function connect() {
 async function findSalt(onTick) {
   const initCode = '0x3d602d80600a3d3981f3363d3d373d3d3d363d73' + L.standardImpl.slice(2).toLowerCase() + '5af43d82803e903d91602b57fd5bf3';
   const pre = '0xff' + L.portal.slice(2).toLowerCase(), initHash = E.keccak256(initCode).slice(2), suf = L.suffix.toLowerCase();
-  let salt = E.hexlify(E.randomBytes(32));
+  // Every Stockz salt starts with "STKZ" (0x53544b5a) so the map can recognise Stockz launches on-chain.
+  let salt = '0x53544b5a' + E.hexlify(E.randomBytes(28)).slice(2);
   for (let i = 0; i < 4000000; i++) {
     const h = E.keccak256(pre + salt.slice(2) + initHash);
     if (h.endsWith(suf)) return { salt, address: E.getAddress('0x' + h.slice(-40)) };
-    salt = E.keccak256(salt);
+    salt = '0x53544b5a' + E.keccak256(salt).slice(10);
     if (i % 3000 === 0) { onTick && onTick(i); await new Promise(r => setTimeout(r, 0)); }
   }
   throw new Error('Could not find a token address. Please retry.');
