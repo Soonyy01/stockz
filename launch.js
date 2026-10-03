@@ -45,13 +45,19 @@ function decodeErr(e) {
 }
 
 // ---------- wallet ----------
-let provider = null, signer = null, account = null;
+let provider = null, signer = null, account = null, connecting = false;
 function waitPrivyAddress(ms) {
   return new Promise((resolve, reject) => {
     const P = window.StockzPrivy; if (P && P.address) return resolve(P.address);
     const t = setTimeout(() => { cleanup(); reject(new Error('Login timed out. Please try again.')); }, ms);
     const onState = e => { if (e.detail && e.detail.address) { cleanup(); resolve(e.detail.address); } };
-    const onLogin = e => { if (e.detail && !e.detail.ok) { cleanup(); reject(new Error('Login was cancelled.')); } };
+    const onLogin = e => {
+      if (!e.detail || e.detail.ok) return;
+      const msg = String(e.detail.error || '');
+      // closing the Privy window is not an error; anything else is shown as-is
+      if (/exited_auth_flow|cancel|closed/i.test(msg)) { cleanup(); const er = new Error('Login was cancelled.'); er.cancelled = true; reject(er); }
+      else { cleanup(); reject(new Error('Login error: ' + msg)); }
+    };
     function cleanup() { clearTimeout(t); window.removeEventListener('stockz:privy', onState); window.removeEventListener('stockz:privy-login', onLogin); }
     window.addEventListener('stockz:privy', onState); window.addEventListener('stockz:privy-login', onLogin);
   });
@@ -60,9 +66,9 @@ function waitPrivyReady(ms) {
   return new Promise((resolve, reject) => {
     const ok = () => window.StockzPrivy && window.StockzPrivy.ready;
     const bad = () => String(window.StockzPrivyStatus || '').startsWith('error');
-    if (ok()) return resolve(); if (bad()) return reject(new Error('Login could not load (' + window.StockzPrivyStatus + ').'));
-    const t = setTimeout(() => { cleanup(); reject(new Error('Login is taking too long to load. Check your connection, and that this site domain is added in the Privy dashboard, then reload.')); }, ms);
-    const on = () => { if (ok()) { cleanup(); resolve(); } else if (bad()) { cleanup(); reject(new Error('Login could not load (' + window.StockzPrivyStatus + ').')); } };
+    if (ok()) return resolve(); if (bad()) return (console.warn('[Stockz] Privy:', window.StockzPrivyStatus), reject(new Error('Login could not load. Please reload the page and try again.')));
+    const t = setTimeout(() => { cleanup(); reject(new Error('Login is taking too long. Please reload the page and try again.')); }, ms);
+    const on = () => { if (ok()) { cleanup(); resolve(); } else if (bad()) { cleanup(); (console.warn('[Stockz] Privy:', window.StockzPrivyStatus), reject(new Error('Login could not load. Please reload the page and try again.'))); } };
     function cleanup() { clearTimeout(t); window.removeEventListener('stockz:privy', on); }
     window.addEventListener('stockz:privy', on);
   });
@@ -240,7 +246,7 @@ async function onSubmit(ev) {
     window.dispatchEvent(new CustomEvent('stockz:launched', { detail: done }));
     const li = log(''); const rb = document.createElement('button'); rb.type = 'button'; rb.className = 'btn'; rb.textContent = 'Refresh the map'; rb.onclick = () => location.reload(); li.appendChild(rb);
   } catch (e) {
-    log('❌ ' + decodeErr(e));
+    log(e && e.cancelled ? 'Login was cancelled.' : '❌ ' + decodeErr(e));
     if (done.length) log(`${done.length} of ${f.stocks.length} launches finished before the error. Nothing else was sent.`);
   } finally { busy = false; $('#lmGo').disabled = false; $('#lmClose').disabled = false; }
 }
@@ -250,15 +256,28 @@ $('#launchModal').addEventListener('click', e => { if (e.target.id === 'launchMo
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#launchModal').hidden) close(); });
 $('#lmSingle').onclick = () => setMode('single'); $('#lmMulti').onclick = () => setMode('multi');
 $('#lmForm').addEventListener('submit', onSubmit);
+// small pixel toast instead of browser alert() popups
+function toast(msg, kind = 'err') {
+  let box = document.getElementById('toasts');
+  if (!box) { box = document.createElement('div'); box.id = 'toasts'; box.setAttribute('aria-live', 'polite'); document.body.appendChild(box); }
+  const t = document.createElement('div'); t.className = 'toast ' + kind; t.textContent = msg;
+  t.onclick = () => t.remove(); box.appendChild(t);
+  setTimeout(() => { t.classList.add('bye'); setTimeout(() => t.remove(), 400); }, 5000);
+}
+window.StockzToast = toast;
 const showAcct = () => { const b = $('#connect'); if (b && account) { b.textContent = account.slice(0, 6) + '…' + account.slice(-4); b.classList.add('on'); } };
 const cb = $('#connect');
 if (cb) cb.onclick = async () => {
   const P = window.StockzPrivy;
   if (account && P && P.authenticated) { try { await P.logout(); } catch {} account = null; signer = null; cb.textContent = 'Connect wallet'; cb.classList.remove('on'); return; }
   const prev = cb.textContent; cb.disabled = true; cb.textContent = 'Loading…';
-  try { await connect(); showAcct(); } catch (e) { cb.textContent = prev; alert(decodeErr(e)); } finally { cb.disabled = false; }
+  try { connecting = true; await connect(); showAcct(); } catch (e) { cb.textContent = prev; console.warn('[Stockz] connect:', decodeErr(e)); } finally { cb.disabled = false; connecting = false; }
 };
-window.addEventListener('stockz:privy', e => { if (account && e.detail && !e.detail.address) { account = null; signer = null; cb.textContent = 'Connect wallet'; cb.classList.remove('on'); } });
+window.addEventListener('stockz:privy', e => {
+  const d = e.detail || {};
+  if (account && !d.address) { account = null; signer = null; cb.textContent = 'Connect wallet'; cb.classList.remove('on'); return; }
+  if (!account && d.address && d.authenticated && !connecting) { connecting = true; connect().then(showAcct).catch(() => {}).finally(() => { connecting = false; }); }
+});
 if (window.ethereum && window.ethereum.on) window.ethereum.on('accountsChanged', a => { account = null; signer = null; const b = $('#connect'); if (b) { b.textContent = 'Connect wallet'; b.classList.remove('on'); } });
 window.StockzLaunch = { open, _findSalt: findSalt };
 })();

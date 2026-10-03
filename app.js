@@ -326,7 +326,10 @@ function setZoom(z, keep = true) { const cx = (vp.scrollLeft + vp.clientWidth / 
   zoom = Math.max(.3, Math.min(1.4, z)); svg.setAttribute('width', 2000 * zoom); svg.setAttribute('height', 1300 * zoom);
   if (keep) { vp.scrollLeft = cx * 2000 * zoom - vp.clientWidth / 2; vp.scrollTop = cy * 1300 * zoom - vp.clientHeight / 2; } }
 $('#zin').onclick = () => setZoom(zoom * 1.2); $('#zout').onclick = () => setZoom(zoom / 1.2);
-zoom = innerWidth < 900 ? .5 : Math.max(.4, Math.min(1, (vp.clientWidth - 370) / 2000, vp.clientHeight / 1300)); setZoom(zoom, false);
+const PORTRAIT = innerWidth >= 900 && matchMedia('(max-aspect-ratio: 4/5)').matches;
+zoom = innerWidth < 900 ? .5 : PORTRAIT ? Math.min(1.3, vp.clientWidth / 2000) : Math.max(.4, Math.min(1, (vp.clientWidth - 370) / 2000, vp.clientHeight / 1300)); setZoom(zoom, false);
+// tall screens (e.g. a phone in desktop mode): shrink the stage to the map so there is no empty band below it
+if (innerWidth >= 900 && !PORTRAIT) { const want = Math.max(620, Math.ceil(1300 * zoom) + 4); if (vp.clientHeight > want) $('#stage').style.height = want + 'px'; }
 if (innerWidth < 900) { vp.scrollLeft = 1250 * zoom - vp.clientWidth / 2; vp.scrollTop = (560 - 60) * zoom - vp.clientHeight / 2; }
 let drag = null;
 vp.addEventListener('pointerdown', e => { if (e.target.closest('[data-id]')) return; drag = { x: e.clientX, y: e.clientY, l: vp.scrollLeft, t: vp.scrollTop }; vp.classList.add('drag'); vp.setPointerCapture(e.pointerId); });
