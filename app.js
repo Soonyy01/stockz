@@ -263,7 +263,12 @@ function select(id) {
    <div>Launched<b>${esc(ago(age))}</b></div><div>Last transfer<b>${t.activityError ? 'unavailable' : (last === null ? 'none yet' : esc(ago(last)))}</b></div>
    <div>Paired with<b>${t.quote ? esc(t.quote) : 'not detected'}</b></div><div>Creator<b>${esc(short(t.creator))}</b></div><div>Contract<b>${esc(short(t.token))}</b></div></div>
    <div class="acts"><a class="btn buy" href="${esc(C.explorer)}/token/${esc(t.token)}" target="_blank" rel="noopener noreferrer">BscScan</a></div>`;
-  $('#sel .tb').textContent = `${t.name} ($${t.symbol})`;
+  $('#sel .tb').innerHTML = `<span>${esc(t.name)} ($${esc(t.symbol)})</span><button type="button" class="selx" id="selClose" aria-label="Close">X</button>`;
+  $('#selClose').onclick = () => {   // back to the normal panel, as when no building is selected
+    STATE.sel = null; render();
+    $('#sel .tb').textContent = 'Selected building';
+    $('#selBody').innerHTML = '<div class="sub">Click a building on the map.</div>';
+  };
   if (window.StockzTrade && t.quote) { $('#selBody').insertAdjacentHTML('beforeend', '<div id="tradeBox"></div>'); window.StockzTrade.mount($('#tradeBox'), t); }
 }
 function selectStock(t) {
