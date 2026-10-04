@@ -59,7 +59,7 @@ let maxSpan = 5000;   // learned from RPC errors such as "limited to a 1000 bloc
 async function getLogsChunked(filter, from, to, onLogs, onProgress) {
   const queue = [];
   for (let s = from; s <= to; s += maxSpan) queue.push([s, Math.min(to, s + maxSpan - 1)]);
-  let total = queue.length, done = 0;
+  let total = queue.length, done = 0, failed = 0;
   async function worker() {
     while (queue.length) {
       const [a, b] = queue.shift();
@@ -74,11 +74,12 @@ async function getLogsChunked(filter, from, to, onLogs, onProgress) {
           maxSpan = Math.max(10, Math.min(maxSpan, lim > 0 ? lim : Math.floor((b - a + 1) / 2)));
           const parts = []; for (let s = a; s <= b; s += maxSpan) parts.push([s, Math.min(b, s + maxSpan - 1)]);
           queue.unshift(...parts); total += parts.length - 1;
-        } else throw e;
+        } else { failed++; console.warn("[Stockz] skipped a block range after retries:", a, b, e && e.message); done++; }
       }
     }
   }
   await Promise.all(Array.from({ length: 3 }, worker));
+  if (failed && failed === total) throw new Error("every block range failed");
 }
 
 function decodeCreated(log) {
@@ -158,6 +159,11 @@ function reportToIndex(tokens) {
   for (const t of miss) fetch(INDEX_API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tx: t.tx }) }).then(r => { if (r.ok) t.indexed = true; }).catch(() => {});
 }
 
+async function indexTokens() {
+  const idx = await fetchIndex(); if (!idx) return null;
+  const list = []; mergeIndex(list, idx);
+  return list.sort((a, b) => b.block - a.block).slice(0, C.maxTokens);
+}
 async function loadTokens(ctx, onUpdate, onProgress) {
   const from = Math.max(0, ctx.latest - Math.ceil(C.lookbackHours * 3600 / ctx.spb));
   const created = await collectLaunches(from, ctx.latest, b => Math.round(ctx.nowTs - (ctx.latest - b) * ctx.spb), onProgress);
@@ -312,5 +318,5 @@ function holders(t) {
   for (const [a, v] of t.balances) if (v > 0n && !skip.has(a)) n++;
   return n;
 }
-window.FlapChain = { init, loadTokens, refresh, holders };
+window.FlapChain = { init, loadTokens, refresh, holders, indexTokens };
 })();

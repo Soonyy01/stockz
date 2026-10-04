@@ -314,7 +314,7 @@ function renderList() {
   let rows = (tokens || []).slice().sort((a, b) => b.block - a.block);
   if (listTab === 'mine') rows = me ? rows.filter(t => (t.creator || '').toLowerCase() === me) : [];
   $('#tlCount').textContent = (tokens || []).length;
-  if (!ctx || (STATE.status !== 'live' && !rows.length)) { box.innerHTML = `<div class="tl-empty">Reading launches from BNB Chain… ${esc(STATE.prog || '')}</div>`; return; }
+  if (!ctx || (STATE.status !== 'live' && STATE.status !== 'index' && !rows.length)) { box.innerHTML = `<div class="tl-empty">Reading launches from BNB Chain… ${esc(STATE.prog || '')}</div>`; return; }
   if (!rows.length) { box.innerHTML = `<div class="tl-empty">${listTab === 'mine' ? (me ? 'You have no Stockz launches in the last 24 hours.' : 'Connect your wallet to see your launches.') : 'No launches yet.'}</div>`; return; }
   box.innerHTML = rows.map(t => {
     const L = t.quote && LOTS.find(l => l.s.t === t.quote), col = L ? L.col : '#cdd2d8';
@@ -374,7 +374,7 @@ function renderTokView() {
   const used = [...new Set((STATE.tokens || []).map(t => t.quote).filter(Boolean))].sort();
   $('#tvPairs').innerHTML = `<button type="button" class="tv-chip${tvPair ? '' : ' on'}" data-p="">All pairs</button>` + used.map(p => `<button type="button" class="tv-chip${tvPair === p ? ' on' : ''}" data-p="${esc(p)}" style="--c:${pairCol(p)}"><i></i>${esc(p)}</button>`).join('');
   const { rows, me } = ctx ? tvRows() : { rows: [], me: null };
-  if (!ctx || (STATE.status !== 'live' && !rows.length)) { grid.innerHTML = `<div class="tl-empty">Reading launches from BNB Chain… ${esc(STATE.prog || '')}<br><small>New launches appear here as soon as they are found.</small></div>`; return; }
+  if (!ctx || (STATE.status !== 'live' && STATE.status !== 'index' && !rows.length)) { grid.innerHTML = `<div class="tl-empty">Reading launches from BNB Chain… ${esc(STATE.prog || '')}<br><small>New launches appear here as soon as they are found.</small></div>`; return; }
   if (!rows.length) {
     grid.innerHTML = `<div class="tl-empty">${tvTab === 'mine' && !me ? 'Connect your wallet to see your tokens.' : tvTab === 'grad' ? 'No graduated tokens yet. A token graduates when its PancakeSwap pool gets liquidity.' : 'No tokens found.'}</div>`; return;
   }
@@ -484,12 +484,24 @@ async function boot() {
   setMode('flap'); render(); renderFeed(); renderClocks();
   setInterval(() => { renderClocks(); render(); }, 60000);
   let ctx = null;
+  // 1) show the launch index right away (verified launches from /api/launches), before any chain scan
+  try {
+    const idxTokens = await window.FlapChain.indexTokens();
+    if (idxTokens && idxTokens.length && !STATE.tokens.length) {
+      STATE.ctx = STATE.ctx || { nowTs: Math.floor(Date.now() / 1000), latest: Math.max(...idxTokens.map(t => t.block)), spb: 0.45, provisional: true };
+      STATE.tokens = idxTokens; STATE.status = 'index'; render(); renderFeed();
+    }
+  } catch {}
+  // 2) then the live chain reading (activity, holders, new launches)
   for (;;) {
     try {
-      ctx = await window.FlapChain.init(); STATE.ctx = ctx;
-      STATE.tokens = await window.FlapChain.loadTokens(ctx, tokens => { STATE.tokens = tokens; render(); renderFeed(); },
+      STATE.prog = 'Connecting to BNB Chain…'; if (!STATE.tokens.length) { renderList(); renderTokView(); }
+      ctx = await window.FlapChain.init(); if (!STATE.tokens.length) STATE.ctx = ctx;
+      const keep = STATE.tokens;
+      STATE.tokens = await window.FlapChain.loadTokens(ctx, tokens => { if (tokens.length || !keep.length) { STATE.ctx = ctx; STATE.tokens = tokens; render(); renderFeed(); } },
         (label, p) => { STATE.prog = `${label} ${Math.round(p * 100)}%`; if (!STATE.tokens.length) { renderList(); renderTokView(); } });
-      STATE.prog = null;
+      STATE.prog = null; STATE.ctx = ctx;
+      if (!STATE.tokens.length && keep.length) STATE.tokens = keep;
       STATE.status = 'live'; render(); renderFeed(); break;
     } catch (e) { console.warn('[Stockz] chain read failed, retrying in 20s:', e && e.message); await new Promise(r => setTimeout(r, 20000)); }
   }

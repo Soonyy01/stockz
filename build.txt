@@ -1,1 +1,1 @@
-stockz build 202610041230 - launch index (api/launches), tokens page, fast scan
+stockz build 202610041240 - database-first token list
