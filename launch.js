@@ -61,14 +61,22 @@ const ERR = {
   '0x1eaf8408': 'Holder reward settings are missing.', '0x8dd5267b': 'Holder rewards must be paid in the paired stock.',
   '0xa735ace3': 'A tiny amount of BNB is needed to create a tax token with a stock pair.'
 };
+function decodeData(v) {
+  const s = v.slice(0, 10).toLowerCase();
+  if (s === '0x08c379a0') { try { return 'Contract says: "' + E.AbiCoder.defaultAbiCoder().decode(['string'], '0x' + v.slice(10))[0] + '"'; } catch {} }
+  if (s === '0x4e487b71') { try { return 'Contract panic (code 0x' + BigInt('0x' + v.slice(10, 74)).toString(16) + ').'; } catch {} }
+  return ERR[s] || `Contract error ${s}.`;
+}
 function decodeErr(e) {
+  if (e && e.reason && typeof e.reason === 'string' && !/^0x/.test(e.reason)) return 'Contract says: "' + e.reason + '"';
   const seen = new Set(), stack = [e];
   while (stack.length) {
     const x = stack.pop(); if (!x || typeof x !== 'object' || seen.has(x)) continue; seen.add(x);
-    for (const k of ['data', 'error', 'info', 'cause']) { const v = x[k]; if (typeof v === 'string' && /^0x[0-9a-fA-F]{8}/.test(v)) { const s = v.slice(0, 10).toLowerCase(); return ERR[s] || `Contract error ${s}.`; } if (v && typeof v === 'object') stack.push(v); }
+    for (const k of ['data', 'error', 'info', 'cause']) { const v = x[k]; if (typeof v === 'string' && /^0x[0-9a-fA-F]{8}/.test(v)) { return decodeData(v); } if (v && typeof v === 'object') stack.push(v); }
   }
   const m = String((e && (e.shortMessage || e.reason || e.message)) || e).match(/0x[0-9a-fA-F]{8}/);
   if (m && ERR[m[0].toLowerCase()]) return ERR[m[0].toLowerCase()];
+  { const d = String((e && (e.shortMessage || e.message)) || '').match(/0x08c379a0[0-9a-fA-F]+/); if (d) return decodeData(d[0]); }
   if (e && (e.code === 'ACTION_REJECTED' || e.code === 4001)) return 'You rejected the request in your wallet.';
   if (/missing revert data/i.test(String(e && (e.shortMessage || e.message)))) return 'The contract rejected it without a reason. Check your balance and that this stock can be paired, then retry.';
   return String((e && (e.shortMessage || e.reason || e.message)) || e).slice(0, 220);
@@ -225,13 +233,28 @@ async function launchOne(f, stock, log) {
   try { await sim(params); }
   catch (e) {
     console.warn('[Stockz] launch simulation:', e);
-    if (!(quoteAmt > 0n)) throw new Error('Simulation failed, nothing was sent: ' + decodeErr(e));
-    // the initial buy inside the launch was rejected: check the launch alone, then buy right after it
-    const plain = { ...params, quoteAmt: 0n };
-    try { await sim(plain); }
-    catch (e2) { console.warn('[Stockz] launch simulation without buy:', e2); throw new Error('Simulation failed, nothing was sent: ' + decodeErr(e2)); }
-    log(`The initial buy can't run inside the launch for ${stock.t}, so Stockz launches first and buys right after.`);
-    params.quoteAmt = 0n; buyAfter = quoteAmt;
+    const why = decodeErr(e);
+    let plainOk = false;
+    if (quoteAmt > 0n) {
+      try { await sim({ ...params, quoteAmt: 0n }); plainOk = true; } catch (e2) { console.warn('[Stockz] launch simulation without buy:', e2); }
+    }
+    if (plainOk) {
+      log(`The initial buy can't run inside the launch for ${stock.t}, so Stockz launches first and buys right after.`);
+      params.quoteAmt = 0n; buyAfter = quoteAmt;
+    } else {
+      // find out which part is rejected, so the message says what to change
+      let hint = '';
+      if (taxed) {
+        try {
+          log('Checking what the contract rejects…');
+          const st = await findSalt(false);
+          const noTax = { ...params, salt: st.salt, quoteAmt: 0n, buyTaxRate: 0, sellTaxRate: 0, taxDuration: 0n, antiFarmerDuration: 0n, mktBps: 0, deflationBps: 0, dividendBps: 0, lpBps: 0, minimumShareBalance: 0n, dividendToken: ZERO, tokenVersion: L.tokenVersion };
+          await withRead(r => portal.connect(r).newTokenV6.staticCall(noTax, { value: 0n, from: account }));
+          hint = ` A launch WITHOUT tax works for ${stock.t}: set Tax to NONE and launch again.`;
+        } catch (e3) { console.warn('[Stockz] probe without tax:', e3); hint = ` A launch without tax is rejected too: ${decodeErr(e3)}`; }
+      }
+      throw new Error('Simulation failed, nothing was sent: ' + why + hint);
+    }
   }
   log('Confirm the launch in your wallet…');
   const tx = await sendTx(portal, 'newTokenV6', [params], { value }, account);
