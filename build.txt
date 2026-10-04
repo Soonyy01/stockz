@@ -1,1 +1,1 @@
-stockz build 202610041745 - multi-pair: 1 pool per tx (~6M gas), resend if the wallet does not answer
+stockz build 202610041805 - multi-pair holder count excludes its pools and burn address

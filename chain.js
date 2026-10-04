@@ -317,8 +317,24 @@ async function scanTxs(tokens, onProgress, onFound) {
   await Promise.all(Array.from({ length: Math.min(4, batches.length) }, work));
   saveCache(tokens);
 }
+// multi-pair: the token's own PancakeSwap V3 pools (computed, no RPC) and the burn address are not holders
+const DEAD_ADDR = '0x000000000000000000000000000000000000dead';
+function multiSkip(t) {
+  if (t._skip && t._skipN === (t.pairs || []).length) return t._skip;
+  const set = [DEAD_ADDR], E = window.ethers, L = C.launch || {};
+  try {
+    for (const tk of t.pairs || []) {
+      const s = (C.stockTokens || []).find(x => x.t === tk); if (!s) continue;
+      const a = E.getAddress(t.token), b = E.getAddress(s.address), [t0, t1] = BigInt(a) < BigInt(b) ? [a, b] : [b, a];
+      const salt = E.keccak256(E.AbiCoder.defaultAbiCoder().encode(['address', 'address', 'uint24'], [t0, t1, Number(L.v3Fee || 10000)]));
+      set.push(E.getCreate2Address(L.pcsV3PoolDeployer, salt, L.pcsV3PoolInitHash).toLowerCase());
+    }
+  } catch {}
+  if ((t.pairs || []).length && set.length > 1) { t._skip = set; t._skipN = t.pairs.length; }
+  return set;
+}
 function holders(t) {
-  let n = 0; const skip = new Set([ZERO, C.portal.toLowerCase(), t.token.toLowerCase()]);
+  let n = 0; const skip = new Set([ZERO, C.portal.toLowerCase(), t.token.toLowerCase(), ...(t.kind === 'multi' ? multiSkip(t) : [])]);
   for (const [a, v] of t.balances) if (v > 0n && !skip.has(a)) n++;
   return n;
 }

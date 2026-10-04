@@ -143,6 +143,8 @@ window.FLAPCITY_CONFIG = {
     pcsV3Npm: "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364",
     pcsV3Router: "0x1b81D678ffb9C0263b24A97847620C99d213eB14",
     pcsV3Quoter: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
+    pcsV3PoolDeployer: "0x41ff9AA7e16B8B1a8a8dc4f0eFacd93D02d071c9",                       // pool addresses are CREATE2 from this deployer
+    pcsV3PoolInitHash: "0x6ce8eb472fa82df5469c6ab6d485f17c3ad13c8cd7af59b3d4a8026c5ce0f7e2",  // PoolAddress.POOL_INIT_CODE_HASH
     v3Fee: 10000, v3Spacing: 200, v3Batch: 1,      // 1% pool fee tier (tick spacing 200), 1 pool per transaction (~6M gas: some wallets silently drop larger transactions)
     multiStocks: ['SPCXB', 'SKHYB', 'NVDAB', 'QQQB', 'TSLAB', 'wPOPMTx', 'GOOGLB', 'GMEB', 'FXIon', 'BNCB', 'AAPLB', 'NFLXB'],   // stocks offered for multi-pair
     multiMaxPairs: 12,                             // max pools per multi-pair token (also enforced by the contract)
