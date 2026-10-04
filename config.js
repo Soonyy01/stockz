@@ -119,7 +119,7 @@ window.FLAPCITY_CONFIG = {
     portal: "0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0",
     standardImpl: "0x8b4329947e34b6d56d71a3385cac122bade7d78d",  // Standard Token Impl (TOKEN_V2_PERMIT) -> vanity suffix 8888
     suffix: "8888",
-    tokenVersion: 2,      // TOKEN_V2_PERMIT (standard, no tax)
+    tokenVersion:1,      // TOKEN_V2_PERMIT (standard, no tax)
     // Tax tokens (Tax Token V3, TOKEN_TAXED_V3) -> vanity suffix 7777. Values from flap's docs and a working public launcher.
     taxImpl: "0x024f18294970B5c76c0691b87f138A0317156422",
     taxSuffix: "7777",

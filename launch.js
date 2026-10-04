@@ -210,22 +210,27 @@ async function launchOne(f, stock, log) {
   log('Uploading image and details…');
   const meta = await uploadMeta(f);
   log('Finding the token address…');
-  const taxed = !!(f.tax && (f.tax.buy > 0 || f.tax.sell > 0));
-  const { salt, address } = await findSalt(taxed);
-  const T = f.tax || { buy: 0, sell: 0, mkt: 10000, burn: 0, div: 0, lp: 0 };
+  // Mainnet only accepts Tax Token V3 launches (the plain token path is disabled), so every Stockz token
+  // is a V3 token. "NONE" means 0% buy and sell tax.
+  const taxed = true;
+  const { salt, address } = await findSalt(true);
+  const T0 = f.tax || { buy: 0, sell: 0, mkt: 10000, burn: 0, div: 0, lp: 0 };
+  const zeroTax = !(T0.buy > 0 || T0.sell > 0);
+  const T = zeroTax ? { buy: 0, sell: 0, mkt: 10000, burn: 0, div: 0, lp: 0 } : T0;
   const params = {
     name: f.name, symbol: f.symbol, meta, dexThresh: L.dexThresh, salt, migratorType: L.migratorType,
     quoteToken: quote, quoteAmt, beneficiary: account, permitData: '0x', extensionID: Z32, extensionData: '0x',
     dexId: L.dexId, lpFeeProfile: L.lpFeeProfile,
-    buyTaxRate: taxed ? T.buy : 0, sellTaxRate: taxed ? T.sell : 0,
-    taxDuration: taxed ? BigInt(L.taxDurationSec) : 0n, antiFarmerDuration: taxed ? BigInt(L.antiFarmerSec) : 0n,
-    mktBps: taxed ? T.mkt : 0, deflationBps: taxed ? T.burn : 0, dividendBps: taxed ? T.div : 0, lpBps: taxed ? T.lp : 0,
-    minimumShareBalance: taxed && T.div > 0 ? E.parseUnits(L.dividendMinShare, 18) : 0n,
-    dividendToken: taxed && T.div > 0 ? quote : ZERO, commissionReceiver: ZERO,
-    tokenVersion: taxed ? L.taxTokenVersion : L.tokenVersion
+    buyTaxRate: T.buy, sellTaxRate: T.sell,
+    taxDuration: BigInt(L.taxDurationSec), antiFarmerDuration: BigInt(L.antiFarmerSec),
+    mktBps: T.mkt, deflationBps: T.burn, dividendBps: T.div, lpBps: T.lp,
+    minimumShareBalance: E.parseUnits(L.dividendMinShare, 18),
+    // with a stock (ERC20) pair the contract requires the dividend token to be the stock itself
+    dividendToken: quote, commissionReceiver: ZERO,
+    tokenVersion: L.taxTokenVersion
   };
-  const value = taxed ? BigInt(L.taxErc20Value) : 0n;
-  if (taxed) log(`Tax: ${T.buy / 100}% buy · ${T.sell / 100}% sell`);
+  const value = BigInt(L.taxErc20Value);
+  if (!zeroTax) log(`Tax: ${T.buy / 100}% buy · ${T.sell / 100}% sell`);
   const portal = new E.Contract(L.portal, [V6, TOKEN_CREATED], signer);
   const sim = p => withRead(r => portal.connect(r).newTokenV6.staticCall(p, { value, from: account }));
   log('Simulating the launch (nothing is sent yet)…');
@@ -242,17 +247,7 @@ async function launchOne(f, stock, log) {
       log(`The initial buy can't run inside the launch for ${stock.t}, so Stockz launches first and buys right after.`);
       params.quoteAmt = 0n; buyAfter = quoteAmt;
     } else {
-      // find out which part is rejected, so the message says what to change
-      let hint = '';
-      if (taxed) {
-        try {
-          log('Checking what the contract rejects…');
-          const st = await findSalt(false);
-          const noTax = { ...params, salt: st.salt, quoteAmt: 0n, buyTaxRate: 0, sellTaxRate: 0, taxDuration: 0n, antiFarmerDuration: 0n, mktBps: 0, deflationBps: 0, dividendBps: 0, lpBps: 0, minimumShareBalance: 0n, dividendToken: ZERO, tokenVersion: L.tokenVersion };
-          await withRead(r => portal.connect(r).newTokenV6.staticCall(noTax, { value: 0n, from: account }));
-          hint = ` A launch WITHOUT tax works for ${stock.t}: set Tax to NONE and launch again.`;
-        } catch (e3) { console.warn('[Stockz] probe without tax:', e3); hint = ` A launch without tax is rejected too: ${decodeErr(e3)}`; }
-      }
+      const hint = '';
       throw new Error('Simulation failed, nothing was sent: ' + why + hint);
     }
   }
