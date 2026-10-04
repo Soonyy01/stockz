@@ -135,7 +135,7 @@ function evolution() {
 // ---------- terminal ----------
 function terminal() {
   const out = $('#termOut'); if (!out) return;
-  const lines = ['> wallet.sign()       you sign every transaction', '> launch.simulate()   tested before your wallet opens', '> approve(exact)      never unlimited', '> keys.held           0', '> status              SAFE ✓'];
+  const lines = ['> wallet.sign()       you sign every transaction', '> launch.simulate()   tested before your wallet opens', '> approve(exact)      never unlimited', '> private.keys        never stored by Stockz', '> status              SAFE ✓'];
   const full = lines.join('\n');
   if (reduce) { out.textContent = full; return; }
   let started = false;

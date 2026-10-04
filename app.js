@@ -252,6 +252,7 @@ function select(id) {
    <div>Paired with<b>${t.quote ? esc(t.quote) : 'not detected'}</b></div><div>Creator<b>${esc(short(t.creator))}</b></div><div>Contract<b>${esc(short(t.token))}</b></div></div>
    <div class="acts"><a class="btn buy" href="${esc(C.explorer)}/token/${esc(t.token)}" target="_blank" rel="noopener noreferrer">BscScan</a></div>`;
   $('#sel .tb').textContent = `${t.name} ($${t.symbol})`;
+  if (window.StockzTrade && t.quote) { $('#selBody').insertAdjacentHTML('beforeend', '<div id="tradeBox"></div>'); window.StockzTrade.mount($('#tradeBox'), t); }
 }
 function selectStock(t) {
   STATE.selStock = t; STATE.sel = null; render(); if (STATE.mode !== 'multi') modeFlap();
@@ -336,6 +337,7 @@ vp.addEventListener('pointerdown', e => { if (e.target.closest('[data-id]')) ret
 vp.addEventListener('pointermove', e => { if (!drag) return; vp.scrollLeft = drag.l - (e.clientX - drag.x); vp.scrollTop = drag.t - (e.clientY - drag.y); });
 const endDrag = () => { drag = null; vp.classList.remove('drag'); }; vp.addEventListener('pointerup', endDrag); vp.addEventListener('pointercancel', endDrag);
 
+window.StockzStockMeta = t => { const L = LOTS.find(l => l.s.t === t); return L ? { col: L.col, land: L.land } : null; };
 // ---------- search: custom pixel list, coloured like each stock's plot ----------
 { const inp = $('#find'), ul = $('#findList');
   const meta = t => { const L = LOTS.find(l => l.s.t === t); return L ? { col: L.col, land: L.land } : { col: '#cdd2d8', land: '' }; };

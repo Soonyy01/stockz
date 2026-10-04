@@ -120,6 +120,14 @@ window.FLAPCITY_CONFIG = {
     standardImpl: "0x8b4329947e34b6d56d71a3385cac122bade7d78d",  // Standard Token Impl (TOKEN_V2_PERMIT) -> vanity suffix 8888
     suffix: "8888",
     tokenVersion: 2,      // TOKEN_V2_PERMIT (standard, no tax)
+    // Tax tokens (Tax Token V3, TOKEN_TAXED_V3) -> vanity suffix 7777. Values from flap's docs and a working public launcher.
+    taxImpl: "0x024f18294970B5c76c0691b87f138A0317156422",
+    taxSuffix: "7777",
+    taxTokenVersion: 6,
+    taxDurationSec: 31536000,     // tax stays on for 365 days
+    antiFarmerSec: 3600,          // 1 hour anti-bot window at launch
+    taxErc20Value: "1000000000",  // ~1 gwei of BNB required when a tax token uses an ERC-20 (stock) quote
+    dividendMinShare: "10000",    // tokens a holder needs for dividends (only used if the creator picks dividends)
     dexThresh: 1,
     migratorType: 1,
     dexId: 0,
