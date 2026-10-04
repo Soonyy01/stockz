@@ -1,1 +1,1 @@
-stockz build 202610041720 - multi-pair: no more stuck steps (RPC time limits + safe gas fallback)
+stockz build 202610041745 - multi-pair: 1 pool per tx (~6M gas), resend if the wallet does not answer

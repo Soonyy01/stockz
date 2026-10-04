@@ -45,7 +45,7 @@ async function rd(fn, ms = 8000) {
   }
   throw err;
 }
-const BATCH = Number(L.v3Batch || 2);
+const BATCH = Number(L.v3Batch || 1);
 
 // deadline from the chain's own clock (a wrong phone clock must not break or weaken the deadline)
 async function deadline() { const b = await rd(r => r.getBlock('latest')); return BigInt((b && b.timestamp) || Math.floor(Date.now() / 1000)) + 1200n; }
@@ -134,9 +134,15 @@ async function launch(f, ctx) {
     log(`— Pools ${from + 1}–${from + part.length} of ${n}: ${part.map(p => f.symbol + '/' + p.stock.t).join(', ')} —`);
     try {
       const g = await poolGas(mt, account);
-      const go = await tapStep(log, `Confirm pools ${from + 1}–${from + part.length} (step ${b + 2} of ${batches + 1})`);
-      if (!go) { log(`Paused. ${done.length} of ${n} pools are live. Open the token page and tap "Finish pool setup" to continue.`); break; }
-      const ptx = await mt.createPools(BATCH, { gasLimit: limitFor(g) });
+      const what = part.length === 1 ? `pool ${from + 1}: ${f.symbol}/${part[0].stock.t}` : `pools ${from + 1}–${from + part.length}`;
+      let ptx = null;
+      while (!ptx) {
+        const go = await tapStep(log, `Confirm ${what} (step ${b + 2} of ${batches + 1})`);
+        if (!go) break;
+        try { ptx = await walletSend(() => mt.createPools(BATCH, { gasLimit: limitFor(g) })); }
+        catch (e) { if (e && e.walletSilent) { log('No answer from your wallet after 60 seconds. Tap the button again to resend.'); continue; } throw e; }
+      }
+      if (!ptx) { log(`Paused. ${done.length} of ${n} pools are live. Open the token page and tap "Finish pool setup" to continue.`); break; }
       log('Waiting for confirmation…');
       const prc = await fastWait(ptx); if (!prc || prc.status !== 1) throw new Error('Creating pools failed on-chain. ' + (prc ? await failReason(prc, g) : ''));
       const inf = await rd(r => mt.connect(r).info());
@@ -174,6 +180,10 @@ async function poolGas(mt, account) {
   if (g > TX_CAP) throw new Error('This step needs more gas than BNB Chain allows in one transaction.');
   return g;
 }
+// wallet request with a 60 s watchdog (some wallets never answer or never show the request)
+function walletSend(fn) {
+  return Promise.race([fn(), new Promise((_, j) => setTimeout(() => j(Object.assign(new Error('No answer from your wallet.'), { walletSilent: true })), 60000))]);
+}
 // a button in the launch log; resolves true on tap, false on "Later"
 function tapStep(log, label) {
   return new Promise(res => {
@@ -208,7 +218,7 @@ async function preparePools(token, account) {
 async function finishPools(token, signer, account, deployTx, g) {
   const mt = new E.Contract(token, MT_ABI, signer);
   if (!g) g = await poolGas(mt, account);
-  const tx = await mt.createPools(BATCH, { gasLimit: limitFor(g) });
+  const tx = await walletSend(() => mt.createPools(BATCH, { gasLimit: limitFor(g) }));
   const rc = await fastWait(tx); if (!rc || rc.status !== 1) throw new Error('Creating pools failed on-chain. ' + (rc ? await failReason(rc, g) : ''));
   const inf = await rd(r => mt.connect(r).info());
   const live = inf[0].filter((_, i) => inf[2][i] > 0n);

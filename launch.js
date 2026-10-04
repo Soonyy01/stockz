@@ -318,7 +318,7 @@ function renderPairs(preset) {
     const rows = $('#lqRows'); if (!rows) return;
     const list = [...picked], n = list.length, sup = Number(L.multiSupply || 1e9), pct = 100;
     const sym = ($('#lmSymbol').value || 'TOKEN').toUpperCase();
-    $('#lqNote').textContent = n ? `${n} pool${n > 1 ? 's' : ''} · ${Math.floor(sup * pct / 100 / n).toLocaleString('en-US')} ${sym} each · ${Math.ceil(n / Number(L.v3Batch || 2)) + 1} wallet confirmations · stock price per pool below (edit if wrong)` : 'Pick the stocks your token pairs with.';
+    $('#lqNote').textContent = n ? `${n} pool${n > 1 ? 's' : ''} · ${Math.floor(sup * pct / 100 / n).toLocaleString('en-US')} ${sym} each · ${Math.ceil(n / Number(L.v3Batch || 1)) + 1} wallet confirmations · stock price per pool below (edit if wrong)` : 'Pick the stocks your token pairs with.';
     rows.innerHTML = list.map(t => `<label class="liq-row"><span class="liq-t" style="--c:${stockCol(t, STOCKS().findIndex(s => s.t === t))}">${esc(t)}</span><input class="lqAmt" data-t="${esc(t)}" inputmode="decimal" placeholder="1 ${esc(t)} in USD" value="${esc(liqAmt[t] || '')}"><small class="liq-bal" data-t="${esc(t)}">${esc(liqSrc[t] || '')}</small></label>`).join('');
     rows.querySelectorAll('.lqAmt').forEach(i => i.oninput = () => { liqAmt[i.dataset.t] = i.value.trim(); liqSrc[i.dataset.t] = 'manual'; const el = rows.querySelector(`.liq-bal[data-t="${CSS.escape(i.dataset.t)}"]`); if (el) el.textContent = 'manual'; });
     loadPrices(list);

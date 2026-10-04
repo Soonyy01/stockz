@@ -437,7 +437,7 @@ async function renderFees(t) {
   const rows = amts => amts.map((v, k) => v > 0n ? `<div class="fees-r"><span>${esc(symOf(inf.rewards[k]))}</span><b>${Number(E.formatUnits(v, decs[k])).toLocaleString('en-US', { maximumFractionDigits: 6 })}</b></div>` : '').join('');
   const live = inf.positions.filter(x => x > 0n).length, total = inf.stocks.length;
   let html = `<div class="fees-note">Liquidity locked forever · ${live} of ${total} pools live. Every trade pays a 1% pool fee: ${+pct.toFixed(2)}% of it is shared by holders by how many ${esc(t.symbol)} they hold, ${+(100 - pct).toFixed(2)}% goes to the creator.</div>`;
-  if (inf.processed < total) html += `<button type="button" class="bigbtn" id="tvFinish"><i>▶</i> Finish pool setup: next ${Math.min(2, total - inf.processed)} (${inf.processed} of ${total} done)</button>`;
+  if (inf.processed < total) html += `<button type="button" class="bigbtn" id="tvFinish"><i>▶</i> Finish pool setup: pool ${inf.processed + 1} of ${total}</button>`;
   if (!me) { body().innerHTML = html + '<div class="fees-note">Connect your wallet to see and claim your rewards.</div>'; wireFinish(); return; }
   body().innerHTML = html + '<div class="fees-note">Reading your rewards…</div>';
   let mine = [], cr = null; const isCreator = inf.creator.toLowerCase() === me.toLowerCase();
@@ -466,7 +466,7 @@ async function renderFees(t) {
       try {
         if (!st || !st.signer) { b.textContent = 'Connecting wallet…'; st = await window.StockzWallet.connect(); b.textContent = 'Confirm in wallet…'; }
         const r = await SM.finishPools(t.token, st.signer, st.account, t.tx, pre); b.textContent = `Done: ${r.processed} of ${r.total} pools set up`; setTimeout(() => renderFees(t), 2500); }
-      catch (e) { b.disabled = false; b.textContent = (e && (e.code === 'ACTION_REJECTED' || e.code === 4001)) ? 'Cancelled. Tap to try again' : (e.message || 'Failed. Tap to try again'); }
+      catch (e) { b.disabled = false; b.textContent = (e && e.walletSilent) ? 'No answer from your wallet. Tap to send again' : (e && (e.code === 'ACTION_REJECTED' || e.code === 4001)) ? 'Cancelled. Tap to try again' : (e.message || 'Failed. Tap to try again'); }
     }; }
 }
 window.addEventListener('stockz:wallet', () => { const id = feesFor, t = id && (STATE.tokens || []).find(x => x.id === id); if (t && !$('#tvDrawer').hidden) renderFees(t); });
