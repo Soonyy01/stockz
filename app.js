@@ -229,7 +229,14 @@ function render() {
     const g = el('g', {transform:`translate(${it.x},${it.y}) scale(${k}) translate(${-it.x},${-it.y})`, 'data-id': it.t.id, tabindex: 0, role: 'button', 'aria-label': `${it.t.name} ${TIERS[it.tier].name}`, style:'cursor:pointer'}, gB);
     drawStage(g, TIERS[it.tier].k, it.x, it.y, col, { night, big: false });
     el('title', {}, g).textContent = `${it.t.name} ($${it.t.symbol}) · ${TIERS[it.tier].name}`;
-    g.addEventListener('click', () => select(it.t.id)); g.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(it.t.id); } });
+    el('circle', { cx: it.x, cy: it.y - 10, r: 22, fill: 'transparent' }, g);            // bigger tap area on phones
+    // ticker tag above the building, tappable too
+    { const hh = HT[TIERS[it.tier].k] * k, lbl = '$' + it.t.symbol.slice(0, 8), w = 8 + lbl.length * 6.2, ty = it.y - hh - 16;
+      const tg = el('g', { 'data-id': it.t.id, style: 'cursor:pointer' }, gF);
+      el('rect', { x: it.x - w / 2, y: ty - 9, width: w, height: 13, fill: '#fffaf0', stroke: INK, 'stroke-width': 1.2 }, tg);
+      const tx = el('text', { x: it.x, y: ty + 1, 'text-anchor': 'middle', 'font-family': 'Silk, monospace', 'font-size': 8, fill: INK }, tg); tx.textContent = lbl;
+      tg.addEventListener('click', () => openToken(it.t.id)); }
+    g.addEventListener('click', () => openToken(it.t.id)); g.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openToken(it.t.id); } });
     if (it.t.recent > 0 && fw < 12) { firework(gF, it.x + 18, it.y - HT[TIERS[it.tier].k] * k - 14, ['#ff5a4e','#f4b400','#b26bff','#7bd13a'][fw % 4]); fw++; }
     it.t._pos = it;
   }
@@ -241,6 +248,7 @@ function render() {
 // ---------- panels ----------
 const short = a => a.slice(0, 6) + '…' + a.slice(-4);
 function ago(sec) { sec = Math.max(0, sec); return sec < 90 ? Math.round(sec) + ' seconds ago' : sec < 5400 ? Math.round(sec / 60) + ' minutes ago' : Math.round(sec / 3600) + ' hours ago'; }
+function openToken(id) { select(id); if (typeof openDrawer === 'function') openDrawer(id); }
 function select(id) {
   STATE.sel = id; STATE.selStock = null; render(); const t = STATE.tokens.find(x => x.id === id); if (!t) return;
   const h = window.FlapChain.holders(t), tier = TIERS[t._tier || 0];
@@ -326,7 +334,7 @@ function renderList() {
   }).join('');
 }
 { const tl = document.getElementById('tlist');
-  if (tl) tl.addEventListener('click', e => { const r = e.target.closest('.tl-row'); if (!r) return; select(r.dataset.id); const el = document.querySelector(`#map [data-id="${CSS.escape(r.dataset.id)}"]`) || document.querySelector(`[data-id="${CSS.escape(r.dataset.id)}"]:not(.tl-row)`); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }); renderList(); });
+  if (tl) tl.addEventListener('click', e => { const r = e.target.closest('.tl-row'); if (!r) return; openToken(r.dataset.id); const el = document.querySelector(`#map [data-id="${CSS.escape(r.dataset.id)}"]`) || document.querySelector(`[data-id="${CSS.escape(r.dataset.id)}"]:not(.tl-row)`); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }); renderList(); });
   document.querySelectorAll('.tl-tab').forEach(b => b.addEventListener('click', () => { listTab = b.dataset.tab; document.querySelectorAll('.tl-tab').forEach(x => x.classList.toggle('on', x === b)); renderList(); }));
   window.addEventListener('stockz:wallet', renderList); }
 // ---------- Tokens page: New / Trending / Graduated / Mine, pair filter, search, trade drawer ----------
