@@ -1,1 +1,1 @@
-stockz build 202610041530 - multi-pair side panel shows only the 12 multi-pair stocks
+stockz build 202610041600 - multi-pair deploy works with every wallet (CREATE2 deployer), 2 pools per tx

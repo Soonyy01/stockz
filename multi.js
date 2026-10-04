@@ -11,13 +11,26 @@ const QUOTER_ABI = ['function quoteExactInputSingle((address tokenIn, address to
 const V2_ROUTER_ABI = ['function getAmountsOut(uint amountIn, address[] path) view returns (uint[] amounts)'];
 const ERC20 = ['function decimals() view returns (uint8)', 'function balanceOf(address) view returns (uint256)', 'function allowance(address,address) view returns (uint256)', 'function approve(address,uint256) returns (bool)'];
 const MT_ABI = [
-  'constructor(string name_, string symbol_, uint256 holderShareBps_, address positionManager_, uint24 poolFee_, int24 tickSpacing_, address[] stocks_, int24[] startTicks_)',
+  'constructor(string name_, string symbol_, address creator_, uint256 holderShareBps_, address positionManager_, uint24 poolFee_, int24 tickSpacing_, address[] stocks_, int24[] startTicks_)',
   'function createPools(uint256 count)', 'function claim() returns (uint256[] paid)', 'function claimCreator() returns (uint256[] paid)',
   'function info() view returns (address[] stocks_, address[] pools_, uint256[] positionIds_, address[] rewards_, uint256 holderShareBps_, address creator_, uint256 processed_)',
-  'function balanceOf(address) view returns (uint256)'
+  'function balanceOf(address) view returns (uint256)', 'function creator() view returns (address)'
 ];
+// The token is deployed through the standard CREATE2 deployer with a normal transaction (not a contract-creation
+// transaction). Some wallets replace the gas limit of contract-creation transactions with a fixed 1,200,000, which
+// is too low; for normal transactions every wallet uses a correct gas limit.
+const DEPLOYER = '0x4e59b44847b379578588920cA78FbF26c0B4956C';
+// explain an on-chain failure: did the wallet send less gas than needed?
+async function failReason(rc, needed) {
+  try {
+    const tx = await CH().withRead(r => r.getTransaction(rc.hash));
+    const lim = tx && tx.gasLimit, used = rc.gasUsed;
+    if (lim && used && used >= lim) return `Your wallet sent it with a gas limit of ${Number(lim).toLocaleString('en-US')}, but about ${Number(needed).toLocaleString('en-US')} is needed (out of gas). In your wallet, set the gas limit to at least ${Number(needed * 12n / 10n).toLocaleString('en-US')} or use "Market"/"Auto" gas, then try again.`;
+  } catch {}
+  return '';
+}
 const CH = () => window.StockzChain;
-const BATCH = Number(L.v3Batch || 3);
+const BATCH = Number(L.v3Batch || 2);
 
 // deadline from the chain's own clock (a wrong phone clock must not break or weaken the deadline)
 async function deadline() { const b = await CH().withRead(r => r.getBlock('latest')); return BigInt((b && b.timestamp) || Math.floor(Date.now() / 1000)) + 1200n; }
@@ -72,20 +85,28 @@ async function launch(f, ctx) {
   let meta = '';
   try { log('Uploading image and details…'); meta = await ctx.uploadMeta(f); } catch { log('⚠ Image upload failed, continuing without it.'); }
 
-  // 1) deploy the token (it holds the whole supply until it is put into the pools)
-  const factory = new E.ContractFactory(MT_ABI, window.STOCKZ_TOKEN_BIN, signer);
-  const dtx = await factory.getDeployTransaction(f.name, f.symbol, bps, L.pcsV3Npm, FEE, SPACING, stocks, ticks);
+  // 1) deploy the token through the CREATE2 deployer (it holds the whole supply until it is put into the pools)
+  const factory = new E.ContractFactory(MT_ABI, window.STOCKZ_TOKEN_BIN);
+  const init = (await factory.getDeployTransaction(f.name, f.symbol, E.getAddress(account), bps, L.pcsV3Npm, FEE, SPACING, stocks, ticks)).data;
+  const salt = E.hexlify(E.randomBytes(32));
+  const token = E.getCreate2Address(DEPLOYER, salt, E.keccak256(init));
+  const data = E.concat([salt, init]);
   log('Simulating the token deployment (nothing is sent yet)…');
   let gas;
-  try { gas = await ch.withRead(r => r.estimateGas({ from: account, data: dtx.data })); }
-  catch (e) { throw new Error('Simulation failed, nothing was sent: ' + ch.decodeErr(e)); }
+  try {
+    const code = await ch.withRead(r => r.getCode(DEPLOYER));
+    if (!code || code === '0x') throw new Error('The CREATE2 deployer is not available on this network.');
+    const out = await ch.withRead(r => r.call({ from: account, to: DEPLOYER, data }));
+    if (!out || E.getAddress(E.dataSlice(E.zeroPadValue(out, 32), 12)) !== token) throw new Error('The deployment simulation returned an unexpected address.');
+    gas = await ch.withRead(r => r.estimateGas({ from: account, to: DEPLOYER, data }));
+  } catch (e) { throw new Error('Simulation failed, nothing was sent: ' + (e.message && !e.code ? e.message : ch.decodeErr(e))); }
   const batches = Math.ceil(n / BATCH);
   log(`Confirm the token deployment in your wallet (${batches + 1} confirmations in total)…`);
-  const sent = await signer.sendTransaction({ data: dtx.data, gasLimit: gas * 13n / 10n });
+  const sent = await signer.sendTransaction({ to: DEPLOYER, data, gasLimit: gas * 13n / 10n });
   log(`Sent: <a href="${esc(C.explorer)}/tx/${esc(sent.hash)}" target="_blank" rel="noopener noreferrer">${esc(sent.hash.slice(0, 12))}…</a> waiting for confirmation…`, true);
   const drc = await ch.waitTx(sent);
-  if (!drc || drc.status !== 1 || !drc.contractAddress) throw new Error('The token deployment failed on-chain.');
-  const token = E.getAddress(drc.contractAddress);
+  const made = await ch.withRead(r => r.getCode(token)).catch(() => '0x');
+  if (!made || made === '0x') { const why = drc ? await failReason(drc, gas) : ''; throw new Error('The token deployment failed on-chain. ' + why); }
   log(`✅ Token created: <a href="${esc(C.explorer)}/token/${esc(token)}" target="_blank" rel="noopener noreferrer">${esc(token)}</a>`, true);
   register(sent.hash, [], meta);
 
@@ -99,8 +120,9 @@ async function launch(f, ctx) {
       try { await ch.withRead(r => mt.connect(r).createPools.staticCall(BATCH, { from: account })); }
       catch (e) { throw new Error('Simulation failed, nothing was sent: ' + ch.decodeErr(e)); }
       log('Confirm creating these pools in your wallet…');
+      const pgas = await ch.withRead(r => mt.connect(r).createPools.estimateGas(BATCH, { from: account }));
       const ptx = await ch.sendTx(mt, 'createPools', [BATCH], {}, account);
-      const prc = await ch.waitTx(ptx); if (!prc || prc.status !== 1) throw new Error('Creating pools failed on-chain.');
+      const prc = await ch.waitTx(ptx); if (!prc || prc.status !== 1) throw new Error('Creating pools failed on-chain. ' + (prc ? await failReason(prc, pgas) : ''));
       const inf = await ch.withRead(r => mt.connect(r).info());
       part.forEach((p, j) => {
         const i = from + j;
@@ -120,15 +142,16 @@ async function launch(f, ctx) {
 }
 
 // finish pool setup later (if a launch was interrupted). Anyone can run it; the plan is fixed in the contract.
-async function finishPools(token, signer, account) {
+async function finishPools(token, signer, account, deployTx) {
   const mt = new E.Contract(token, MT_ABI, signer);
   try { await CH().withRead(r => mt.connect(r).createPools.staticCall(BATCH, { from: account })); }
   catch (e) { throw new Error('Simulation failed, nothing was sent: ' + CH().decodeErr(e)); }
+  const pgas = await CH().withRead(r => mt.connect(r).createPools.estimateGas(BATCH, { from: account }));
   const tx = await CH().sendTx(mt, 'createPools', [BATCH], {}, account);
-  const rc = await CH().waitTx(tx); if (!rc || rc.status !== 1) throw new Error('Creating pools failed on-chain.');
+  const rc = await CH().waitTx(tx); if (!rc || rc.status !== 1) throw new Error('Creating pools failed on-chain. ' + (rc ? await failReason(rc, pgas) : ''));
   const inf = await CH().withRead(r => mt.connect(r).info());
   const live = inf[0].filter((_, i) => inf[2][i] > 0n);
-  await register(tx.hash, live, '');
+  if (deployTx) await register(deployTx, live, '');
   return { hash: tx.hash, processed: Number(inf[6]), total: inf[0].length };
 }
 
@@ -154,8 +177,9 @@ async function send(token, fn, signer, account) {
   const c = new E.Contract(token, MT_ABI, signer);
   try { await CH().withRead(r => c.connect(r)[fn].staticCall({ from: account })); }
   catch (e) { throw new Error('Simulation failed, nothing was sent: ' + CH().decodeErr(e)); }
+  const g = await CH().withRead(r => c.connect(r)[fn].estimateGas({ from: account }));
   const tx = await CH().sendTx(c, fn, [], {}, account);
-  const rc = await CH().waitTx(tx); if (!rc || rc.status !== 1) throw new Error('The transaction failed on-chain.');
+  const rc = await CH().waitTx(tx); if (!rc || rc.status !== 1) throw new Error('The transaction failed on-chain. ' + (rc ? await failReason(rc, g) : ''));
   return tx.hash;
 }
 const claim = (token, signer, account) => send(token, 'claim', signer, account);

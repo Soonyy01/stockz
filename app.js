@@ -460,7 +460,7 @@ async function renderFees(t) {
   function wireFinish() { const b = $('#tvFinish'); if (!b) return; b.onclick = async () => {
     const st = window.StockzWallet && window.StockzWallet.state(); if (!st || !st.signer) { b.textContent = 'Connect your wallet first'; return; }
     b.disabled = true; b.textContent = 'Confirm in wallet…';
-    try { await SM.finishPools(t.token, st.signer, st.account); setTimeout(() => renderFees(t), 3000); } catch (e) { b.disabled = false; b.textContent = (e && (e.code === 'ACTION_REJECTED' || e.code === 4001)) ? 'Cancelled. Try again' : (e.message || 'Failed. Try again'); }
+    try { await SM.finishPools(t.token, st.signer, st.account, t.tx); setTimeout(() => renderFees(t), 3000); } catch (e) { b.disabled = false; b.textContent = (e && (e.code === 'ACTION_REJECTED' || e.code === 4001)) ? 'Cancelled. Try again' : (e.message || 'Failed. Try again'); }
   }; }
 }
 window.addEventListener('stockz:wallet', () => { const id = feesFor, t = id && (STATE.tokens || []).find(x => x.id === id); if (t && !$('#tvDrawer').hidden) renderFees(t); });

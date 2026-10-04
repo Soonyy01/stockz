@@ -70,15 +70,16 @@ contract StockzMultiToken {
 
     modifier nonReentrant() { require(locked == 1, "busy"); locked = 2; _; locked = 1; }
 
-    constructor(string memory name_, string memory symbol_, uint256 holderShareBps_, address positionManager_,
+    constructor(string memory name_, string memory symbol_, address creator_, uint256 holderShareBps_, address positionManager_,
                 uint24 poolFee_, int24 tickSpacing_, address[] memory stocks_, int24[] memory startTicks_) {
         uint256 n = stocks_.length;
         require(n >= 1 && n <= MAX_PAIRS, "1-12 pairs");
         require(startTicks_.length == n, "length");
         require(holderShareBps_ >= MIN_HOLDER_SHARE_BPS && holderShareBps_ <= 10000, "holder share 10-100%");
         require(tickSpacing_ > 0, "spacing");
+        require(creator_ != address(0), "creator");
         name = name_; symbol = symbol_;
-        creator = msg.sender; holderShareBps = holderShareBps_; positionManager = positionManager_;
+        creator = creator_; holderShareBps = holderShareBps_; positionManager = positionManager_;
         poolFee = poolFee_; tickSpacing = tickSpacing_;
         rewardTokens.push(address(this));
         for (uint256 i = 0; i < n; i++) {
