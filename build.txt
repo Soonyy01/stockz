@@ -1,1 +1,1 @@
-stockz build 202610041600 - multi-pair deploy works with every wallet (CREATE2 deployer), 2 pools per tx
+stockz build 202610041625 - multi-pair: tap per step (wallet opens on mobile), faster, finish from token page

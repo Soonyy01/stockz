@@ -104,25 +104,26 @@ async function launch(f, ctx) {
   log(`Confirm the token deployment in your wallet (${batches + 1} confirmations in total)…`);
   const sent = await signer.sendTransaction({ to: DEPLOYER, data, gasLimit: gas * 13n / 10n });
   log(`Sent: <a href="${esc(C.explorer)}/tx/${esc(sent.hash)}" target="_blank" rel="noopener noreferrer">${esc(sent.hash.slice(0, 12))}…</a> waiting for confirmation…`, true);
-  const drc = await ch.waitTx(sent);
+  const drc = await fastWait(sent).catch(() => null);
   const made = await ch.withRead(r => r.getCode(token)).catch(() => '0x');
   if (!made || made === '0x') { const why = drc ? await failReason(drc, gas) : ''; throw new Error('The token deployment failed on-chain. ' + why); }
   log(`✅ Token created: <a href="${esc(C.explorer)}/token/${esc(token)}" target="_blank" rel="noopener noreferrer">${esc(token)}</a>`, true);
   register(sent.hash, [], meta);
 
-  // 2) pools, a few per transaction; liquidity is locked inside the token contract forever
+  // 2) pools, 2 per transaction (BSC caps one transaction at 16,777,216 gas; one V3 pool costs ~6M).
+  // Every step waits for a tap: mobile browsers only open the wallet app right after a tap.
   const mt = new E.Contract(token, MT_ABI, signer);
   const done = [];
   for (let b = 0; b < batches; b++) {
     const part = f.liq.slice(b * BATCH, (b + 1) * BATCH), from = b * BATCH;
     log(`— Pools ${from + 1}–${from + part.length} of ${n}: ${part.map(p => f.symbol + '/' + p.stock.t).join(', ')} —`);
     try {
-      try { await ch.withRead(r => mt.connect(r).createPools.staticCall(BATCH, { from: account })); }
-      catch (e) { throw new Error('Simulation failed, nothing was sent: ' + ch.decodeErr(e)); }
-      log('Confirm creating these pools in your wallet…');
-      const pgas = await ch.withRead(r => mt.connect(r).createPools.estimateGas(BATCH, { from: account }));
-      const ptx = await ch.sendTx(mt, 'createPools', [BATCH], {}, account);
-      const prc = await ch.waitTx(ptx); if (!prc || prc.status !== 1) throw new Error('Creating pools failed on-chain. ' + (prc ? await failReason(prc, pgas) : ''));
+      const g = await poolGas(mt, account);
+      const go = await tapStep(log, `Confirm pools ${from + 1}–${from + part.length} (step ${b + 2} of ${batches + 1})`);
+      if (!go) { log(`Paused. ${done.length} of ${n} pools are live. Open the token page and tap "Finish pool setup" to continue.`); break; }
+      const ptx = await mt.createPools(BATCH, { gasLimit: limitFor(g) });
+      log('Waiting for confirmation…');
+      const prc = await fastWait(ptx); if (!prc || prc.status !== 1) throw new Error('Creating pools failed on-chain. ' + (prc ? await failReason(prc, g) : ''));
       const inf = await ch.withRead(r => mt.connect(r).info());
       part.forEach((p, j) => {
         const i = from + j;
@@ -131,9 +132,9 @@ async function launch(f, ctx) {
       });
       register(sent.hash, done.slice(), meta);
     } catch (e) {
-      if (e && (e.code === 'ACTION_REJECTED' || e.code === 4001)) { log(`Paused: you rejected the request. ${done.length} of ${n} pools are live. Open the token page to finish the rest.`); break; }
+      if (e && (e.code === 'ACTION_REJECTED' || e.code === 4001)) { log(`Paused: you rejected the request. ${done.length} of ${n} pools are live. Open the token page and tap "Finish pool setup" to continue.`); break; }
       log(`❌ ${e.message || ch.decodeErr(e)}`);
-      log(`Paused. ${done.length} of ${n} pools are live; nothing else was sent. Open the token page to finish the rest.`);
+      log(`Paused. ${done.length} of ${n} pools are live; nothing else was sent. Open the token page and tap "Finish pool setup" to continue.`);
       break;
     }
   }
@@ -141,14 +142,51 @@ async function launch(f, ctx) {
   return { token, tx: sent.hash, pools: done.length, total: n };
 }
 
-// finish pool setup later (if a launch was interrupted). Anyone can run it; the plan is fixed in the contract.
-async function finishPools(token, signer, account, deployTx) {
-  const mt = new E.Contract(token, MT_ABI, signer);
-  try { await CH().withRead(r => mt.connect(r).createPools.staticCall(BATCH, { from: account })); }
+// ---------- fast, tap-driven steps ----------
+const TX_CAP = 16_700_000n;   // BSC per-transaction gas cap is 16,777,216 (BEP-652)
+const limitFor = g => { const l = g * 13n / 10n; return l > TX_CAP ? TX_CAP : l; };
+async function poolGas(mt, account) {
+  let g;
+  try { g = await CH().withRead(r => mt.connect(r).createPools.estimateGas(BATCH, { from: account })); }
   catch (e) { throw new Error('Simulation failed, nothing was sent: ' + CH().decodeErr(e)); }
-  const pgas = await CH().withRead(r => mt.connect(r).createPools.estimateGas(BATCH, { from: account }));
-  const tx = await CH().sendTx(mt, 'createPools', [BATCH], {}, account);
-  const rc = await CH().waitTx(tx); if (!rc || rc.status !== 1) throw new Error('Creating pools failed on-chain. ' + (rc ? await failReason(rc, pgas) : ''));
+  if (g > TX_CAP) throw new Error('This step needs more gas than BNB Chain allows in one transaction.');
+  return g;
+}
+// a button in the launch log; resolves true on tap, false on "Later"
+function tapStep(log, label) {
+  return new Promise(res => {
+    const li = log(''); li.className = 'steprow';
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'bigbtn'; b.innerHTML = '<i>▶</i> ' + esc(label);
+    const later = document.createElement('button'); later.type = 'button'; later.className = 'btn steplater'; later.textContent = 'Later';
+    b.onclick = () => { li.remove(); res(true); };
+    later.onclick = () => { li.remove(); res(false); };
+    li.append(b, later); b.scrollIntoView({ block: 'nearest' });
+  });
+}
+// receipt as soon as any source has it (wallet or public RPC, polled every second)
+async function fastWait(tx) {
+  let rc = null, walletDone = false;
+  tx.wait().then(r => { rc = rc || r; }).catch(() => {}).finally(() => { walletDone = true; });
+  const t0 = Date.now();
+  while (!rc && Date.now() - t0 < 300000) {
+    try { const r = await CH().withRead(p => p.getTransactionReceipt(tx.hash)); if (r) rc = r; } catch {}
+    if (!rc) await new Promise(r => setTimeout(r, 1000));
+  }
+  if (!rc) throw new Error('Still waiting for confirmation. Check the transaction on BscScan.');
+  return rc;
+}
+
+// finish pool setup later (if a launch was interrupted). Anyone can run it; the plan is fixed in the contract.
+// prepare() estimates first so the tap can open the wallet immediately.
+async function preparePools(token, account) {
+  const mt = new E.Contract(token, MT_ABI);
+  return poolGas(mt, account);
+}
+async function finishPools(token, signer, account, deployTx, g) {
+  const mt = new E.Contract(token, MT_ABI, signer);
+  if (!g) g = await poolGas(mt, account);
+  const tx = await mt.createPools(BATCH, { gasLimit: limitFor(g) });
+  const rc = await fastWait(tx); if (!rc || rc.status !== 1) throw new Error('Creating pools failed on-chain. ' + (rc ? await failReason(rc, g) : ''));
   const inf = await CH().withRead(r => mt.connect(r).info());
   const live = inf[0].filter((_, i) => inf[2][i] > 0n);
   if (deployTx) await register(deployTx, live, '');
@@ -185,5 +223,5 @@ async function send(token, fn, signer, account) {
 const claim = (token, signer, account) => send(token, 'claim', signer, account);
 const claimCreator = (token, signer, account) => send(token, 'claimCreator', signer, account);
 
-window.StockzMulti = { launch, finishPools, quote, swapCall, deadline, stockUsd, tokenInfo, previewClaim, previewCreator, claim, claimCreator, startTick, FEE };
+window.StockzMulti = { launch, finishPools, preparePools, quote, swapCall, deadline, stockUsd, tokenInfo, previewClaim, previewCreator, claim, claimCreator, startTick, FEE };
 })();
