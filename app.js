@@ -284,7 +284,8 @@ function modeFlap() {
   $('#goSingle').onclick = () => window.StockzLaunch.open({ mode: 'single', stocks: t ? [t] : [] });
 }
 function modeMulti() {
-  const list = C.stockTokens || [];
+  const MS = ((C.launch && C.launch.multiStocks) || []).map(x => x.toLowerCase());
+  const list = (C.stockTokens || []).filter(s => !MS.length || MS.includes(s.t.toLowerCase()));   // only the multi-pair stocks
   $('#modeBody').innerHTML = `<label class="allrow"><input type="checkbox" id="mAll"> All stocks <b>${list.length}</b></label><div class="pick">` +
    list.map((s, i) => `<label><input type="checkbox" class="mOne" value="${i}"> ${esc(s.t)}</label>`).join('') +
    `</div><button type="button" class="bigbtn" id="goMulti" disabled><i>▶</i> Pick stocks</button>`;

@@ -1,1 +1,1 @@
-stockz build 202610041520 - multi-pair: up to 12 stocks, liquidity locked forever, holder dividends (min 10%)
+stockz build 202610041530 - multi-pair side panel shows only the 12 multi-pair stocks
