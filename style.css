@@ -456,3 +456,30 @@ body.lock{overflow:hidden}
   .tv-grid{grid-template-columns:1fr;gap:8px}.tv-nm b{font-size:17px}.tv-stats{font-size:14px}
   .tv-drawer{align-items:flex-end}.tv-panel{width:100%;height:88vh}
 }
+
+/* multi-pair liquidity + pool selector */
+.taxbox[hidden]{display:none!important}
+.liq{margin:8px 0;padding:8px;border:3px dashed #9aa1a9}
+.liq-head{display:flex;justify-content:space-between;align-items:center;gap:8px;font:12px Silk;letter-spacing:1px}
+#lmForm .liq-pct{display:flex;align-items:center;gap:6px;margin:0;font:18px V,monospace;letter-spacing:0}
+#lmForm .liq-pct input{width:64px;display:inline-block;margin:0;text-align:right}
+.liq-rows{display:grid;gap:6px;margin-top:6px}
+#lmForm .liq-row{display:grid;grid-template-columns:84px 1fr auto;gap:8px;align-items:center;margin:0}
+#lmForm .liq-row input{margin:0}
+.liq-t{font:10px Silk;padding:6px 6px;text-align:center;background:var(--c);color:#1d1a16;box-shadow:2px 2px 0 #000;border:2px solid #000}
+.liq-bal{font-size:15px;color:#5a544a;white-space:nowrap}
+.trpools{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-bottom:8px}
+.trpool{font:10px Silk;padding:6px 8px;cursor:pointer;background:#fff;border:2px solid #000}
+.trpool.on{background:var(--gold);box-shadow:2px 2px 0 #000}
+@media (max-width:899px){#lmForm .liq-row{grid-template-columns:70px 1fr}.liq-bal{grid-column:2;font-size:13px;margin-top:-4px}.trpool{font-size:9px}}
+.liq-mc{margin-top:6px}
+.fees{margin-top:12px;padding:10px;background:#e9e4d6;border:3px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi)}
+.fees-h{font:11px Silk;letter-spacing:1px;margin-bottom:6px}
+.fees-b{font-size:17px;color:#4a515a}
+.fees-r{display:flex;justify-content:space-between;padding:4px 6px;margin:3px 0;background:#fff;border:2px solid #000}.fees-r span{font:10px Silk;color:#1d1a16}.fees-r b{font-weight:normal;color:#1d1a16}
+.fees .bigbtn{margin-top:8px}
+
+.liq-fixed{font:18px V,monospace;letter-spacing:0;color:#4a515a}
+.fees-note{font-size:15px;color:#5a544a;margin:4px 0 6px;line-height:1.25}
+.fees-sub{font:10px Silk;letter-spacing:1px;margin:10px 0 4px;color:#1d1a16}
+#tvFinish{width:100%;margin:4px 0 6px}

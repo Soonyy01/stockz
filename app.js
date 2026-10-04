@@ -213,8 +213,12 @@ function render() {
   const order = rows.slice().sort((a, b) => (b.tier === 5 ? -1 : b.tier) - (a.tier === 5 ? -1 : a.tier) || b.h - a.h);
   tokens.forEach(t => { t._onPlot = false; });
   const PLOT_OFF = [[-16,0],[16,0],[0,-8],[-30,-6],[30,-6],[0,8]], used = {}, placed = [], rest = [];
-  for (const r of order) { const L = r.t.quote && LOTS.find(l => l.s.t === r.t.quote), n = L ? (used[L.s.t] || 0) : 99;
-    if (L && n < 6) { used[L.s.t] = n + 1; r.t._onPlot = true; const o = PLOT_OFF[n]; placed.push({ ...r, plot: true, x: L.x + o[0], y: L.y + o[1] }); } else rest.push(r); }
+  // a multi-pair token stands on every plot it has a pool with
+  for (const r of order) { let any = false;
+    for (const q of (r.t.pairs && r.t.pairs.length ? r.t.pairs : [r.t.quote])) {
+      const L = q && LOTS.find(l => l.s.t === q), n = L ? (used[L.s.t] || 0) : 99;
+      if (L && n < 6) { used[L.s.t] = n + 1; r.t._onPlot = true; any = true; const o = PLOT_OFF[n]; placed.push({ ...r, plot: true, x: L.x + o[0], y: L.y + o[1] }); } }
+    if (!any) rest.push(r); }
   const pts = LAT.slice().sort((a, b) => a[1] - b[1] || Math.abs(a[0]-ISL.cx) - Math.abs(b[0]-ISL.cx));
   const items = placed.concat(rest.slice(0, pts.length).map((r, i) => ({ ...r, x: pts[i][0], y: pts[i][1] })));
   const night = !sky.us.open;
@@ -301,7 +305,8 @@ function renderFeed() {
   for (const t of tokens) {
     const k = t.creator + '|' + t.name + '|' + t.symbol;
     const g = groups.get(k) || { name: t.name, symbol: t.symbol, stocks: [], ts: 0 };
-    if (t.quote) g.stocks.push(t.quote); g.ts = Math.max(g.ts, t.ts); groups.set(k, g);
+    for (const q of (t.pairs && t.pairs.length ? t.pairs : t.quote ? [t.quote] : [])) if (!g.stocks.includes(q)) g.stocks.push(q);
+    g.ts = Math.max(g.ts, t.ts); groups.set(k, g);
   }
   const ev = [];
   for (const g of groups.values()) {
@@ -347,7 +352,7 @@ async function checkGrad() {
   const CH = window.StockzChain, E = window.ethers; if (gradBusy || !CH || !E) return; gradBusy = true;
   try {
     const now = Date.now();
-    const todo = (STATE.tokens || []).filter(t => t.quote && t.grad !== true && (!t.gradAt || now - t.gradAt > 300000)).slice(0, 40);
+    const todo = (STATE.tokens || []).filter(t => t.quote && t.kind !== 'multi' && t.grad !== true && (!t.gradAt || now - t.gradAt > 300000)).slice(0, 40);
     await Promise.all(todo.map(async t => {
       try {
         const q = stockAddr(t.quote); if (!q) return;
@@ -366,8 +371,9 @@ function tvRows() {
   const W = window.StockzWallet && window.StockzWallet.state(), me = W && W.account ? W.account.toLowerCase() : null;
   const q = ($('#tvQ') && $('#tvQ').value || '').trim().toLowerCase();
   let rows = (STATE.tokens || []).slice();
-  if (tvPair) rows = rows.filter(t => t.quote === tvPair);
-  if (q) rows = rows.filter(t => [t.name, t.symbol, t.token, t.quote || '', (LOTS.find(l => l.s.t === t.quote) || { s: {} }).s.n || ''].some(v => String(v).toLowerCase().includes(q)));
+  const pairsOf = t => t.pairs && t.pairs.length ? t.pairs : t.quote ? [t.quote] : [];
+  if (tvPair) rows = rows.filter(t => pairsOf(t).includes(tvPair));
+  if (q) rows = rows.filter(t => [t.name, t.symbol, t.token, ...pairsOf(t), ...pairsOf(t).map(p => (LOTS.find(l => l.s.t === p) || { s: {} }).s.n || '')].some(v => String(v).toLowerCase().includes(q)));
   if (tvTab === 'mine') rows = me ? rows.filter(t => (t.creator || '').toLowerCase() === me) : [];
   if (tvTab === 'grad') rows = rows.filter(t => t.grad === true);
   if (tvTab === 'trending') rows.sort((a, b) => (b.recent - a.recent) || (b.transfers - a.transfers) || (b.block - a.block));
@@ -379,7 +385,7 @@ function renderTokView() {
   if (view !== 'tokens') return;
   const { ctx } = STATE, grid = $('#tvGrid');
   // pair chips: All + every stock that has at least one Stockz token
-  const used = [...new Set((STATE.tokens || []).map(t => t.quote).filter(Boolean))].sort();
+  const used = [...new Set((STATE.tokens || []).flatMap(t => t.pairs && t.pairs.length ? t.pairs : [t.quote]).filter(Boolean))].sort();
   $('#tvPairs').innerHTML = `<button type="button" class="tv-chip${tvPair ? '' : ' on'}" data-p="">All pairs</button>` + used.map(p => `<button type="button" class="tv-chip${tvPair === p ? ' on' : ''}" data-p="${esc(p)}" style="--c:${pairCol(p)}"><i></i>${esc(p)}</button>`).join('');
   const { rows, me } = ctx ? tvRows() : { rows: [], me: null };
   if (!ctx || (STATE.status !== 'live' && STATE.status !== 'index' && !rows.length)) { grid.innerHTML = `<div class="tl-empty">Reading launches from BNB Chain… ${esc(STATE.prog || '')}<br><small>New launches appear here as soon as they are found.</small></div>`; return; }
@@ -388,11 +394,11 @@ function renderTokView() {
   }
   grid.innerHTML = rows.map(t => {
     const col = pairCol(t.quote), tier = TIERS[t._tier || 0], h = t.activityError ? '–' : window.FlapChain.holders(t);
-    const st = t.grad === true ? '<span class="tv-st g">🎓 Graduated</span>' : t.grad === false ? '<span class="tv-st">Bonding curve</span>' : '';
+    const st = t.kind === 'multi' ? `<span class="tv-st g">🥞 ${t.pairs.length} pools</span>` : t.grad === true ? '<span class="tv-st g">🎓 Graduated</span>' : t.grad === false ? '<span class="tv-st">Bonding curve</span>' : '';
     return `<div class="tv-card" data-id="${esc(t.id)}" style="--c:${col}">
       <div class="tv-top"><span class="tl-av" style="background:${col}">${esc(t.symbol.slice(0, 2).toUpperCase())}</span>
         <div class="tv-nm"><b>${esc(t.name)}</b><small>$${esc(t.symbol)} · ${esc(ago(ctx.nowTs - t.ts))}</small></div>
-        <em class="tv-pair">${esc(t.quote || 'island')}</em></div>
+        <em class="tv-pair">${t.kind === 'multi' ? esc(t.pairs.length + ' pairs') : esc(t.quote || 'island')}</em></div>
       <div class="tv-stats"><span>👤 <b>${h}</b> holders</span><span>🔁 <b>${t.activityError ? '–' : t.transfers}</b> transfers</span><span>${t.recent > 0 ? '🎆 <b>' + t.recent + '</b> in 15m' : '🏠 ' + esc(tier.name)}</span></div>
       <div class="tv-foot">${st}<button type="button" class="btn tv-trade" data-id="${esc(t.id)}">Trade</button></div></div>`;
   }).join('');
@@ -401,16 +407,62 @@ function openDrawer(id) {
   const t = (STATE.tokens || []).find(x => x.id === id); if (!t) return;
   const { ctx } = STATE, h = t.activityError ? 'unavailable' : window.FlapChain.holders(t), col = pairCol(t.quote);
   $('#tvTitle').textContent = `${t.name} ($${t.symbol})`;
-  $('#tvBody').innerHTML = `<div class="head"><div class="av" style="background:${col}">${esc(t.symbol.slice(0, 2).toUpperCase())}</div><div><div class="nm">${esc(t.name)}</div><div class="sub">$${esc(t.symbol)} · paired with ${esc(t.quote || 'unknown')}</div></div></div>
+  $('#tvBody').innerHTML = `<div class="head"><div class="av" style="background:${col}">${esc(t.symbol.slice(0, 2).toUpperCase())}</div><div><div class="nm">${esc(t.name)}</div><div class="sub">$${esc(t.symbol)} · paired with ${esc(t.kind === 'multi' ? t.pairs.join(', ') : (t.quote || 'unknown'))}</div></div></div>
     <div class="tv-ca"><code>${esc(t.token)}</code><button type="button" class="wm-copy" id="tvCopy">COPY</button></div>
-    <div class="stats"><div>Holders<b>${h}</b></div><div>Transfers<b>${t.activityError ? 'unavailable' : t.transfers}</b></div><div>Launched<b>${esc(ago(ctx.nowTs - t.ts))}</b></div><div>Status<b>${t.grad === true ? 'Graduated' : t.grad === false ? 'Bonding curve' : 'checking…'}</b></div><div>Creator<b>${esc(short(t.creator || ''))}</b></div><div>Building<b>${esc(TIERS[t._tier || 0].name)}</b></div></div>
+    <div class="stats"><div>Holders<b>${h}</b></div><div>Transfers<b>${t.activityError ? 'unavailable' : t.transfers}</b></div><div>Launched<b>${esc(ago(ctx.nowTs - t.ts))}</b></div><div>Status<b>${t.kind === 'multi' ? 'PancakeSwap · ' + t.pairs.length + ' pools' : t.grad === true ? 'Graduated' : t.grad === false ? 'Bonding curve' : 'checking…'}</b></div><div>Creator<b>${esc(short(t.creator || ''))}</b></div><div>Building<b>${esc(TIERS[t._tier || 0].name)}</b></div></div>
     <div class="acts"><a class="btn" href="${esc(C.explorer)}/token/${esc(t.token)}" target="_blank" rel="noopener noreferrer">BscScan</a><button type="button" class="btn" id="tvMap">Show on map</button></div>
-    <div id="tvTrade"></div>`;
+    <div id="tvTrade"></div><div id="tvFees"></div>`;
   $('#tvCopy').onclick = async e => { try { await navigator.clipboard.writeText(t.token); e.target.textContent = 'COPIED'; } catch {} };
   $('#tvMap').onclick = () => { closeDrawer(); setView('map'); select(t.id); const el = document.querySelector(`#map [data-id="${CSS.escape(t.id)}"]`); if (el) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }); };
   if (window.StockzTrade && t.quote) window.StockzTrade.mount($('#tvTrade'), t); else $('#tvTrade').innerHTML = '<div class="mnote">Trading needs a detected stock pair.</div>';
   $('#tvDrawer').hidden = false; document.body.classList.add('lock');
+  renderFees(t);
 }
+// multi-pair dividends: pool fees of the locked liquidity, split between holders (claim) and the creator
+let feesFor = null;
+async function renderFees(t) {
+  const box = $('#tvFees'); if (!box) return; feesFor = t.id; box.innerHTML = '';
+  if (t.kind !== 'multi' || !window.StockzMulti) return;
+  const SM = window.StockzMulti, E = window.ethers;
+  const W = window.StockzWallet && window.StockzWallet.state(), me = W && W.account;
+  box.innerHTML = '<div class="fees"><div class="fees-h">Holder dividends</div><div class="fees-b">Reading…</div></div>';
+  const body = () => box.querySelector('.fees-b');
+  let inf; try { inf = await SM.tokenInfo(t.token); } catch { if (feesFor === t.id) body().textContent = 'Could not read the token contract right now.'; return; }
+  if (feesFor !== t.id) return;
+  const pct = inf.holderBps / 100;
+  box.querySelector('.fees-h').textContent = `Holder dividends · ${+pct.toFixed(2)}% of pool fees`;
+  const symOf = a => { if (a.toLowerCase() === t.token.toLowerCase()) return t.symbol; const s = (C.stockTokens || []).find(x => x.address.toLowerCase() === a.toLowerCase()); return s ? s.t : short(a); };
+  const decs = await Promise.all(inf.rewards.map(r => window.StockzChain.withRead(p => new E.Contract(r, ['function decimals() view returns (uint8)'], p).decimals()).then(Number).catch(() => 18)));
+  const rows = amts => amts.map((v, k) => v > 0n ? `<div class="fees-r"><span>${esc(symOf(inf.rewards[k]))}</span><b>${Number(E.formatUnits(v, decs[k])).toLocaleString('en-US', { maximumFractionDigits: 6 })}</b></div>` : '').join('');
+  const live = inf.positions.filter(x => x > 0n).length, total = inf.stocks.length;
+  let html = `<div class="fees-note">Liquidity locked forever · ${live} of ${total} pools live. Every trade pays a 1% pool fee: ${+pct.toFixed(2)}% of it is shared by holders by how many ${esc(t.symbol)} they hold, ${+(100 - pct).toFixed(2)}% goes to the creator.</div>`;
+  if (inf.processed < total) html += `<button type="button" class="btn" id="tvFinish">Finish pool setup (${inf.processed} of ${total} done)</button>`;
+  if (!me) { body().innerHTML = html + '<div class="fees-note">Connect your wallet to see and claim your rewards.</div>'; wireFinish(); return; }
+  body().innerHTML = html + '<div class="fees-note">Reading your rewards…</div>';
+  let mine = [], cr = null; const isCreator = inf.creator.toLowerCase() === me.toLowerCase();
+  try { mine = await SM.previewClaim(t.token, me); } catch {}
+  if (isCreator) { try { cr = await SM.previewCreator(t.token, me); } catch {} }
+  if (feesFor !== t.id) return;
+  const mineRows = rows(mine), crRows = cr ? rows(cr) : '';
+  html += `<div class="fees-sub">Your rewards</div>${mineRows || '<div class="fees-note">Nothing to claim yet. Hold ' + esc(t.symbol) + ' to earn a share of every pool fee.</div>'}
+    <button type="button" class="bigbtn" id="tvClaim"${mineRows ? '' : ' disabled'}><i>▶</i> Claim rewards</button>`;
+  if (isCreator) html += `<div class="fees-sub">Your creator fees (${+(100 - pct).toFixed(2)}%)</div>${crRows || '<div class="fees-note">Nothing to collect yet.</div>'}
+    <button type="button" class="bigbtn" id="tvCollect"${crRows ? '' : ' disabled'}><i>▶</i> Collect fees</button>`;
+  html += '<div class="trmsg" id="tvFeeMsg"></div>';
+  body().innerHTML = html; wireFinish();
+  const act = (id, fn, label) => { const btn = $(id); if (!btn) return; btn.onclick = async () => {
+    btn.disabled = true; btn.innerHTML = '<i>…</i> Confirm in wallet';
+    try { const h = await fn(t.token, window.StockzWallet.state().signer, me); $('#tvFeeMsg').innerHTML = `Done. <a href="${esc(C.explorer)}/tx/${esc(h)}" target="_blank" rel="noopener noreferrer">View on BscScan</a>`; $('#tvFeeMsg').className = 'trmsg ok'; setTimeout(() => renderFees(t), 4000); }
+    catch (e) { $('#tvFeeMsg').className = 'trmsg'; $('#tvFeeMsg').textContent = (e && (e.code === 'ACTION_REJECTED' || e.code === 4001)) ? 'Cancelled in wallet.' : (e.message || 'Failed.'); btn.disabled = false; btn.innerHTML = '<i>▶</i> ' + label; }
+  }; };
+  act('#tvClaim', SM.claim, 'Claim rewards'); act('#tvCollect', SM.claimCreator, 'Collect fees');
+  function wireFinish() { const b = $('#tvFinish'); if (!b) return; b.onclick = async () => {
+    const st = window.StockzWallet && window.StockzWallet.state(); if (!st || !st.signer) { b.textContent = 'Connect your wallet first'; return; }
+    b.disabled = true; b.textContent = 'Confirm in wallet…';
+    try { await SM.finishPools(t.token, st.signer, st.account); setTimeout(() => renderFees(t), 3000); } catch (e) { b.disabled = false; b.textContent = (e && (e.code === 'ACTION_REJECTED' || e.code === 4001)) ? 'Cancelled. Try again' : (e.message || 'Failed. Try again'); }
+  }; }
+}
+window.addEventListener('stockz:wallet', () => { const id = feesFor, t = id && (STATE.tokens || []).find(x => x.id === id); if (t && !$('#tvDrawer').hidden) renderFees(t); });
 function closeDrawer() { $('#tvDrawer').hidden = true; document.body.classList.remove('lock'); }
 function setView(v) {
   view = v; document.querySelectorAll('.vtab').forEach(b => b.classList.toggle('on', b.dataset.view === v));
@@ -427,7 +479,8 @@ function setView(v) {
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#tvDrawer').hidden) closeDrawer(); });
   window.addEventListener('stockz:wallet', renderTokView);
   window.StockzView = { setView, openDrawer };
-  if (location.hash === '#tokens') setTimeout(() => setView('tokens'), 0); }
+  if (location.hash === '#tokens') setTimeout(() => setView('tokens'), 0);
+  window.addEventListener('hashchange', () => setView(location.hash === '#tokens' ? 'tokens' : 'map')); }
 function renderClocks() {
   const s = applySkyLite(); const SHORT = { US: 'NY', HK: 'HK', KR: 'SEL' };
   $('#clocks').innerHTML = ['US','HK','KR'].map(k => `<div class="clock" title="${MARKETS[k].n} ${s[k].open ? 'open' : 'closed'}"><span class="led" style="background:${s[k].open ? '#4cd964' : '#ff5a4e'}"></span><span class="cn">${MARKETS[k].n}</span><span class="cs">${SHORT[k]}</span> ${s[k].time}<span class="co"> ${s[k].open ? 'open' : 'closed'}</span></div>`).join('');

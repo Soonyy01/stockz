@@ -16,7 +16,8 @@ window.FLAPCITY_CONFIG = {
   // topic0 = keccak256("TokenCreated(uint256,address,uint256,address,string,string,string)"), verified locally.
   topicTokenCreated: "0x504e7f360b2e5fe33cbaaae4c593bc55305328341bf79009e43e0e3b7f699603",
   lookbackHours: 24,      // how far back to scan for new tokens (older tokens are not drawn)
-  maxTokens: 300,          // newest N tokens are drawn
+  maxTokens: 300,
+  listFromTs: 1791097200,  // only tokens launched from 2026-10-04 07:00 UTC (14:00 WIB) are shown; earlier test launches are hidden          // newest N tokens are drawn
   // Stock tokens with their BSC addresses, supplied by the Stockz owner from the official list (checksum checked).
   // Used to (1) detect which stock a token is paired with and (2) fill the Multi-pair picker.
   // Missing addresses (not yet supplied): AGPUB, CYPHB, TLT.
@@ -132,6 +133,22 @@ window.FLAPCITY_CONFIG = {
     migratorType: 1,
     dexId: 0,
     lpFeeProfile: 0,
-    uploadApi: "/api/upload"
+    uploadApi: "/api/upload",
+    // Multi-pair (1 token, many pools) runs on PancakeSwap V2
+    pcsRouter: "0x10ED43C718714eb63d5aA57B78B54704E256024E",
+    pcsFactory: "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
+    multiSupply: "1000000000",
+    // PancakeSwap V3 on BSC (addresses from pancakeswap/pancake-v3-contracts deployments/bscMainnet.json)
+    pcsV3Factory: "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+    pcsV3Npm: "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364",
+    pcsV3Router: "0x1b81D678ffb9C0263b24A97847620C99d213eB14",
+    pcsV3Quoter: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
+    v3Fee: 10000, v3Spacing: 200, v3Batch: 3,      // 1% pool fee tier (tick spacing 200), 3 pools per transaction
+    multiStocks: ['SPCXB', 'SKHYB', 'NVDAB', 'QQQB', 'TSLAB', 'wPOPMTx', 'GOOGLB', 'GMEB', 'FXIon', 'BNCB', 'AAPLB', 'NFLXB'],   // stocks offered for multi-pair
+    multiMaxPairs: 12,                             // max pools per multi-pair token (also enforced by the contract)
+    multiHolderPct: 10,                            // default share of pool fees paid to holders (min 10%, enforced by the contract)
+    multiMcapUsd: 5000,                            // default starting market cap for multi-pair tokens
+    usdt: "0x55d398326f99059fF775485246999027B3197955",
+    wbnb: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
   },
 };

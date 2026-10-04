@@ -1,1 +1,1 @@
-stockz build 202610041315 - tap a building to open its token page, ticker tags on map
+stockz build 202610041520 - multi-pair: up to 12 stocks, liquidity locked forever, holder dividends (min 10%)

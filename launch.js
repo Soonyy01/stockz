@@ -292,29 +292,63 @@ const stockCol = (t, i) => { const m = window.StockzStockMeta && window.StockzSt
 let picked = new Set();
 function renderPairs(preset) {
   const box = $('#lmPairs'), multi = mode === 'multi';
-  picked = new Set(multi ? (preset || []) : (preset && preset[0] ? [preset[0]] : []));
-  box.innerHTML = `${multi ? '<div class="mnote">Same name, ticker and image on every stock you pick. One wallet confirmation per stock.</div>' : ''}
+  const MAXP = Number(L.multiMaxPairs || 12), MS = (L.multiStocks || []).map(x => x.toLowerCase());
+  const LIST = multi && MS.length ? STOCKS().filter(s => MS.includes(s.t.toLowerCase())) : STOCKS();
+  picked = new Set(multi ? (preset || []).filter(t => LIST.some(s => s.t === t)).slice(0, MAXP) : (preset && preset[0] ? [preset[0]] : []));
+  document.querySelector('.taxbox').hidden = multi;
+  box.innerHTML = `${multi ? `<div class="mnote">One token, up to ${MAXP} pools: your token gets a PancakeSwap V3 pool with every stock you pick. No stock or money needed, only gas; buyers bring the stock. 100% of the supply goes into the pools and the liquidity is locked forever. The 1% pool fee is shared between holders and you.</div>` : ''}
     <div class="spk">
-      <div class="spk-head"><span class="spk-lbl">${multi ? 'Pair with (pick several)' : 'Pair with'}</span><span class="spk-sel" id="spkSel"></span></div>
-      <div class="spk-bar"><input id="spkQ" placeholder="Search ${STOCKS().length} stocks…" autocomplete="off" spellcheck="false" aria-label="Search stocks">${multi ? '<button type="button" class="spk-all" id="spkAll">ALL</button>' : ''}</div>
-      <div class="spk-grid" id="spkGrid" role="listbox" aria-multiselectable="${multi}">${STOCKS().map((s, i) => `<button type="button" class="spk-t" role="option" data-t="${esc(s.t)}" style="--c:${stockCol(s.t, i)}"><i></i><b>${esc(s.t)}</b><small>${esc(stockName(s.t) || 'Tokenized stock')}</small></button>`).join('')}</div>
+      <div class="spk-head"><span class="spk-lbl">${multi ? `Pair with (up to ${MAXP})` : 'Pair with'}</span><span class="spk-sel" id="spkSel"></span></div>
+      <div class="spk-bar"><input id="spkQ" placeholder="Search ${LIST.length} stocks…" autocomplete="off" spellcheck="false" aria-label="Search stocks"></div>
+      <div class="spk-grid" id="spkGrid" role="listbox" aria-multiselectable="${multi}">${LIST.map((s, i) => `<button type="button" class="spk-t" role="option" data-t="${esc(s.t)}" style="--c:${stockCol(s.t, i)}"><i></i><b>${esc(s.t)}</b><small>${esc(stockName(s.t) || 'Tokenized stock')}</small></button>`).join('')}</div>
     </div>
-    ${multi ? '' : '<label>Initial buy (optional, in the paired stock)<input id="lmBuy" inputmode="decimal" placeholder="0" autocomplete="off"></label>'}`;
+    ${multi ? `<div class="liq"><div class="liq-head"><span>Liquidity</span><span class="liq-fixed">100% of the supply goes into the pools</span></div>
+      <label class="liq-pct liq-mc">Starting market cap $<input id="lqMc" inputmode="decimal" value="${liqMc}"></label>
+      <label class="liq-pct liq-mc">Holders get <input id="lqDiv" inputmode="decimal" value="${liqDiv}">% of the pool fees (min 10%)</label>
+      <div class="mnote" id="lqDivNote"></div>
+      <div class="mnote" id="lqNote"></div><div class="liq-rows" id="lqRows"></div></div>` : '<label>Initial buy (optional, in the paired stock)<input id="lmBuy" inputmode="decimal" placeholder="0" autocomplete="off"></label>'}`;
   const sync = () => {
     box.querySelectorAll('.spk-t').forEach(b => { const on = picked.has(b.dataset.t); b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
     const n = picked.size, one = [...picked][0];
     $('#spkSel').innerHTML = !n ? '<em>none yet</em>' : multi ? `<b>${n}</b> picked` : `<b>${esc(one)}</b> ${esc(stockName(one))}`;
-    const all = $('#spkAll'); if (all) all.classList.toggle('on', n === STOCKS().length);
+    if (multi) drawLiq();
   };
+  // per-pool liquidity rows (multi): token amount is split evenly, the stock amount is set per pool
+  const drawLiq = () => {
+    const rows = $('#lqRows'); if (!rows) return;
+    const list = [...picked], n = list.length, sup = Number(L.multiSupply || 1e9), pct = 100;
+    const sym = ($('#lmSymbol').value || 'TOKEN').toUpperCase();
+    $('#lqNote').textContent = n ? `${n} pool${n > 1 ? 's' : ''} · ${Math.floor(sup * pct / 100 / n).toLocaleString('en-US')} ${sym} each · ${Math.ceil(n / Number(L.v3Batch || 3)) + 1} wallet confirmations · stock price per pool below (edit if wrong)` : 'Pick the stocks your token pairs with.';
+    rows.innerHTML = list.map(t => `<label class="liq-row"><span class="liq-t" style="--c:${stockCol(t, STOCKS().findIndex(s => s.t === t))}">${esc(t)}</span><input class="lqAmt" data-t="${esc(t)}" inputmode="decimal" placeholder="1 ${esc(t)} in USD" value="${esc(liqAmt[t] || '')}"><small class="liq-bal" data-t="${esc(t)}">${esc(liqSrc[t] || '')}</small></label>`).join('');
+    rows.querySelectorAll('.lqAmt').forEach(i => i.oninput = () => { liqAmt[i.dataset.t] = i.value.trim(); liqSrc[i.dataset.t] = 'manual'; const el = rows.querySelector(`.liq-bal[data-t="${CSS.escape(i.dataset.t)}"]`); if (el) el.textContent = 'manual'; });
+    loadPrices(list);
+  };
+  const divNote = () => { const d = parseFloat(liqDiv); $('#lqDivNote').textContent = d >= 10 && d <= 100 ? `Of every 1% pool fee: ${+d.toFixed(2)}% is shared by holders (they claim it on the token page), ${+(100 - d).toFixed(2)}% goes to you. Fixed forever after launch.` : 'Holder share must be between 10% and 100%.'; };
+  if (multi) { $('#lqMc').oninput = () => { liqMc = $('#lqMc').value.trim(); }; $('#lqDiv').oninput = () => { liqDiv = $('#lqDiv').value.trim(); divNote(); }; divNote(); }
   $('#spkGrid').onclick = e => {
     const b = e.target.closest('.spk-t'); if (!b) return; const t = b.dataset.t;
-    if (multi) { picked.has(t) ? picked.delete(t) : picked.add(t); } else picked = new Set([t]);
+    if (multi) { if (picked.has(t)) picked.delete(t); else if (picked.size >= MAXP) { toast(`Up to ${MAXP} stocks per token.`); return; } else picked.add(t); } else picked = new Set([t]);
     sync();
   };
   $('#spkQ').oninput = () => { const q = $('#spkQ').value.trim().toLowerCase(); box.querySelectorAll('.spk-t').forEach(b => { b.hidden = !!q && !(b.dataset.t.toLowerCase().includes(q) || stockName(b.dataset.t).toLowerCase().includes(q)); }); };
-  if (multi) $('#spkAll').onclick = () => { picked = picked.size === STOCKS().length ? new Set() : new Set(STOCKS().map(s => s.t)); sync(); };
   sync();
   const first = box.querySelector('.spk-t.on'); if (first) first.scrollIntoView({ block: 'nearest' });
+}
+// multi-pair inputs survive re-renders. Stock USD prices are read on-chain from PancakeSwap; if none is found the creator types it.
+let liqMc = String(L.multiMcapUsd || 5000), liqDiv = String(L.multiHolderPct || 10); const liqAmt = {}, liqSrc = {}, priceTried = new Set();
+async function loadPrices(list) {
+  if (!window.StockzMulti) return;
+  const todo = list.filter(t => !priceTried.has(t)); todo.forEach(t => priceTried.add(t));
+  await Promise.all(todo.map(async t => {
+    const s = STOCKS().find(x => x.t === t); if (!s) return;
+    const el = () => document.querySelector(`.liq-bal[data-t="${CSS.escape(t)}"]`), inp = () => document.querySelector(`.lqAmt[data-t="${CSS.escape(t)}"]`);
+    if (el()) el().textContent = 'reading price…';
+    const r = await window.StockzMulti.stockUsd(s).catch(() => null);
+    if (liqSrc[t] === 'manual') return;
+    if (r) { liqAmt[t] = String(+r.usd.toPrecision(6)); liqSrc[t] = r.src; if (inp()) inp().value = liqAmt[t]; }
+    else liqSrc[t] = 'no price found, type it';
+    if (el()) el().textContent = liqSrc[t];
+  }));
 }
 function setMode(m, preset) { mode = m; $('#lmSingle').classList.toggle('on', m === 'single'); $('#lmMulti').classList.toggle('on', m === 'multi'); renderPairs(preset); }
 function log(msg, html) { const li = document.createElement('li'); if (html) li.innerHTML = msg; else li.textContent = msg; $('#lmLog').appendChild(li); li.scrollIntoView({ block: 'nearest' }); return li; }
@@ -344,7 +378,15 @@ function readForm() {
   } else {
     picks = [...picked];
     if (!picks.length) throw new Error('Pick at least one stock.');
+    if (picks.length > Number(L.multiMaxPairs || 12)) throw new Error(`Up to ${L.multiMaxPairs || 12} stocks per token.`);
+    f.holderPct = parseFloat(liqDiv);
+    if (!(f.holderPct >= 10 && f.holderPct <= 100)) throw new Error('Holder share must be between 10% and 100% of the pool fees.');
     f.buy = '';
+    f.liqPct = 100;   // the whole supply goes into the pools (locked)
+    f.mcapUsd = parseFloat(liqMc);
+    if (!(f.mcapUsd >= 100 && f.mcapUsd <= 1e10)) throw new Error('Starting market cap must be at least $100.');
+    f.liq = picks.map(t => ({ stock: STOCKS().find(s => s.t === t), usd: parseFloat(liqAmt[t]) }));
+    for (const p of f.liq) if (!(p.usd > 0 && isFinite(p.usd))) throw new Error(`Enter the USD price of 1 ${p.stock.t}.`);
   }
   // tax
   const num = id => { const v = parseFloat(($(id) && $(id).value) || '0'); return isFinite(v) ? v : NaN; };
@@ -369,6 +411,14 @@ async function onSubmit(ev) {
   const done = [];
   try {
     if (!account) { log('Connecting wallet…'); await connect(); showAcct(); }
+    if (mode === 'multi') {
+      const r = await window.StockzMulti.launch({ ...f, symbol: f.symbol.toUpperCase() }, { log, uploadMeta, signer, account });
+      log(r.pools === r.total ? `🎉 Done. ${f.symbol.toUpperCase()} is live with ${r.pools} pool${r.pools > 1 ? 's' : ''}.` : `${f.symbol.toUpperCase()} is live with ${r.pools} of ${r.total} pools.`);
+      window.dispatchEvent(new CustomEvent('stockz:launched', { detail: [r] }));
+      const li = log(''); const rb = document.createElement('button'); rb.type = 'button'; rb.className = 'btn'; rb.textContent = 'View my tokens';
+      rb.onclick = () => { close(); if (window.StockzView) { window.StockzView.setView('tokens'); const m = document.querySelector('.tv-tab[data-k="mine"]'); if (m) m.click(); } }; li.appendChild(rb);
+      return;
+    }
     for (let i = 0; i < f.stocks.length; i++) {
       const s = f.stocks[i];
       log(`— ${f.stocks.length > 1 ? `(${i + 1}/${f.stocks.length}) ` : ''}${f.symbol.toUpperCase()} paired with ${s.t} —`);

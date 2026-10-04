@@ -134,6 +134,7 @@ async function collectLaunches(from, to, tsOf, onProgress) {
 
 // ---------- launch index (/api/launches): every verified Stockz launch, no time limit ----------
 const INDEX_API = "/api/launches";
+const listed = t => (t.ts || 0) >= (C.listFromTs || 0);     // launches before the cut-off are not shown
 async function fetchIndex() {
   try {
     const r = await fetch(INDEX_API, { cache: "no-store" }); if (!r.ok) return null;
@@ -145,17 +146,20 @@ function mergeIndex(list, idx) {
   if (!idx) return;
   const byTok = new Map(list.map(t => [t.token.toLowerCase(), t])), cc = loadCache();
   for (const r of idx) {
-    const k = String(r.token || "").toLowerCase(); if (!/^0x[0-9a-f]{40}$/.test(k)) continue;
+    const k = String(r.token || "").toLowerCase(); if (!/^0x[0-9a-f]{40}$/.test(k) || !listed(r)) continue;
     let t = byTok.get(k);
     if (!t) { t = { token: k, id: k, creator: r.creator || null, name: r.name, symbol: r.symbol, ts: r.ts, block: r.block, tx: r.tx, balances: new Map(), transfers: 0, lastBlock: 0, recent: 0, rb: [] }; list.push(t); byTok.set(k, t); }
-    t.stockz = true; t.indexed = true; t.quote = tickerOf(r.quote) || t.quote;
+    t.stockz = true; t.indexed = true;
+    if (r.kind === 'multi') {
+      t.kind = 'multi'; t.pairs = (r.pairs || []).map(tickerOf).filter(Boolean); t.quote = t.pairs[0] || null; t.grad = true; t.venue = 'pancake';
+    } else t.quote = tickerOf(r.quote) || t.quote;
     t.name = t.name || r.name || "Unnamed"; t.symbol = t.symbol || r.symbol || "?"; t.creator = t.creator || r.creator || null;
-    cc[k] = { s: 1, b: t.block, q: t.quote || "", n: t.name, y: t.symbol, c: t.creator || "" };
+    if (t.kind !== 'multi') cc[k] = { s: 1, b: t.block, q: t.quote || "", n: t.name, y: t.symbol, c: t.creator || "" };
   }
 }
 // tokens found by the chain scan but missing from the index are sent there (the server re-verifies them)
 function reportToIndex(tokens) {
-  const miss = tokens.filter(t => t.stockz && !t.indexed && t.tx).slice(0, 10);
+  const miss = tokens.filter(t => t.stockz && listed(t) && !t.indexed && t.tx).slice(0, 10);
   for (const t of miss) fetch(INDEX_API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tx: t.tx }) }).then(r => { if (r.ok) t.indexed = true; }).catch(() => {});
 }
 
@@ -173,7 +177,7 @@ async function loadTokens(ctx, onUpdate, onProgress) {
   const idx = await fetchIndex(); const hasIndex = !!idx;
   mergeIndex(list, idx);
   list.sort((a, b) => b.block - a.block);
-  const found = () => list.filter(t => t.stockz).slice(0, C.maxTokens);
+  const found = () => list.filter(t => t.stockz && listed(t)).slice(0, C.maxTokens);
   if (found().length) onUpdate(found(), created.length);
   await scanTxs(list, onProgress, () => onUpdate(found(), created.length));
   const tokens = found();
@@ -228,7 +232,7 @@ async function refresh(ctx, tokens, onUpdate) {
   if (idx) { const before = new Set(fresh.map(t => t.id)); mergeIndex(fresh, idx.filter(r => !have.has(String(r.token).toLowerCase()) || before.has(String(r.token).toLowerCase()))); }
   if (fresh.length) await scanTxs(fresh.filter(t => !t.indexed), null);
   if (idx) reportToIndex(fresh);
-  const all = fresh.filter(t => t.stockz).sort((a, b) => b.block - a.block).concat(tokens).slice(0, C.maxTokens);
+  const all = fresh.filter(t => t.stockz && listed(t)).sort((a, b) => b.block - a.block).concat(tokens).slice(0, C.maxTokens);
   const byId = new Map(all.map(t => [t.id, t]));
   for (let i = 0; i < all.length; i += 25) {
     const b = all.slice(i, i + 25).filter(t => !t.activityError);

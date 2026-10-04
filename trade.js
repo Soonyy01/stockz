@@ -12,19 +12,26 @@ const fmt = (v, d) => { const n = Number(E.formatUnits(v, d)); return n === 0 ? 
 const short = e => String((e && (e.shortMessage || e.reason || e.message)) || e).slice(0, 160);
 
 function mount(box, t) {
-  const stock = (C.stockTokens || []).find(s => s.t === t.quote);
+  // multi-pair tokens trade on their PancakeSwap pools; Stockz flap tokens trade through the Portal
+  const multi = t.kind === 'multi' && Array.isArray(t.pairs) && t.pairs.length > 0;
+  const findStock = tk => (C.stockTokens || []).find(s => s.t === tk);
+  let stock = findStock(multi ? t.pairs[0] : t.quote);
   if (!box || !stock) { if (box) box.innerHTML = ''; return; }
-  const Q = E.getAddress(stock.address), TK = E.getAddress(t.token);
+  let Q = E.getAddress(stock.address); const TK = E.getAddress(t.token);
+  const SPENDER = multi ? C.launch.pcsV3Router : PORTAL;
   let side = 'buy', slip = 100, dec = { [Q]: 18, [TK]: 18 }, timer = null, lastQuote = null, busy = false;
   box.innerHTML = `<div class="trade">
+    ${multi ? `<div class="trpools"><span class="trlbl">Pool</span>${t.pairs.map((p, i) => `<button type="button" class="trpool${i ? '' : ' on'}" data-p="${esc(p)}">${esc(t.symbol)}/${esc(p)}</button>`).join('')}</div>` : ''}
     <div class="trtabs"><button type="button" class="trtab on" data-s="buy">Buy</button><button type="button" class="trtab" data-s="sell">Sell</button></div>
     <div class="trrow"><span class="trlbl" id="trPayLbl">Pay (${esc(stock.t)})</span><span class="trbal" id="trBal">Balance: –</span></div>
     <div class="trin"><input id="trAmt" inputmode="decimal" placeholder="0.0" autocomplete="off"><button type="button" id="trMax">MAX</button><span id="trUnit">${esc(stock.t)}</span></div>
     <div class="trrow"><span class="trlbl">Slippage</span><div class="trslip"><button type="button" data-v="50">0.5%</button><button type="button" data-v="100" class="on">1%</button><button type="button" data-v="300">3%</button><button type="button" data-v="500">5%</button><input id="trSlipC" placeholder="custom" inputmode="decimal"></div></div>
-    <dl class="trinfo"><dt>You receive (est.)</dt><dd id="trOut">–</dd><dt>Minimum received</dt><dd id="trMin">–</dd><dt>Fees</dt><dd>Protocol fee + token tax, included</dd></dl>
+    <dl class="trinfo"><dt>You receive (est.)</dt><dd id="trOut">–</dd><dt>Minimum received</dt><dd id="trMin">–</dd><dt>Fees</dt><dd>${multi ? '1% PancakeSwap pool fee, included' : 'Protocol fee + token tax, included'}</dd></dl>
     <button type="button" class="bigbtn" id="trGo" disabled><i>▶</i> Enter an amount</button>
     <div class="trmsg" id="trMsg"></div></div>`;
   const $ = s => box.querySelector(s);
+  const quoteOut = (p, a) => multi ? window.StockzMulti.quote([p.inT, p.outT], a)
+    : withRead(r => new E.Contract(PORTAL, [QUOTE], r).quoteExactInput.staticCall({ inputToken: p.inT, outputToken: p.outT, inputAmount: a }));
   const pair = () => side === 'buy' ? { inT: Q, outT: TK, inSym: stock.t, outSym: t.symbol } : { inT: TK, outT: Q, inSym: t.symbol, outSym: stock.t };
   const msg = (h, ok) => { $('#trMsg').innerHTML = h; $('#trMsg').className = 'trmsg' + (ok ? ' ok' : ''); };
 
@@ -49,7 +56,7 @@ function mount(box, t) {
     if (!a) { setBtn(); return; }
     const p = pair();
     try {
-      const out = await withRead(r => new E.Contract(PORTAL, [QUOTE], r).quoteExactInput.staticCall({ inputToken: p.inT, outputToken: p.outT, inputAmount: a }));
+      const out = await quoteOut(p, a);
       lastQuote = out;
       $('#trOut').textContent = fmt(out, dec[p.outT]) + ' ' + p.outSym;
       $('#trMin').textContent = fmt(out * BigInt(10000 - slip) / 10000n, dec[p.outT]) + ' ' + p.outSym;
@@ -68,17 +75,23 @@ function mount(box, t) {
       const bal = await withRead(r => new E.Contract(p.inT, ERC20, r).balanceOf(account));
       if (bal < a) throw new Error(`Not enough ${p.inSym}.`);
       const erc = new E.Contract(p.inT, ERC20, signer);
-      if ((await withRead(r => erc.connect(r).allowance(account, PORTAL))) < a) {
+      if ((await withRead(r => erc.connect(r).allowance(account, SPENDER))) < a) {
         b.innerHTML = '<i>…</i> Approve in wallet'; msg(`Approving exactly ${esc($('#trAmt').value)} ${esc(p.inSym)}…`);
-        const atx = await CH().sendTx(erc, 'approve', [PORTAL, a], {}, account); const arc = await CH().waitTx(atx); if (!arc || arc.status !== 1) throw new Error('Approval failed.');
+        const atx = await CH().sendTx(erc, 'approve', [SPENDER, a], {}, account); const arc = await CH().waitTx(atx); if (!arc || arc.status !== 1) throw new Error('Approval failed.');
       }
-      const fresh = await withRead(r => new E.Contract(PORTAL, [QUOTE], r).quoteExactInput.staticCall({ inputToken: p.inT, outputToken: p.outT, inputAmount: a }));
-      const params = { inputToken: p.inT, outputToken: p.outT, inputAmount: a, minOutputAmount: fresh * BigInt(10000 - slip) / 10000n, permitData: '0x' };
-      const portal = new E.Contract(PORTAL, [SWAP], signer);
+      const fresh = await quoteOut(p, a), minOut = fresh * BigInt(10000 - slip) / 10000n;
+      let target, fn, args, ov;
+      if (multi) {
+        const sc = window.StockzMulti.swapCall(signer, p.inT, p.outT, a, minOut, account, await window.StockzMulti.deadline());
+        target = sc.target; fn = sc.fn; args = sc.args; ov = {};
+      } else {
+        target = new E.Contract(PORTAL, [SWAP], signer); fn = 'swapExactInput';
+        args = [{ inputToken: p.inT, outputToken: p.outT, inputAmount: a, minOutputAmount: minOut, permitData: '0x' }]; ov = { value: 0n };
+      }
       b.innerHTML = '<i>…</i> Simulating';
-      try { await withRead(r => portal.connect(r).swapExactInput.staticCall(params, { value: 0n, from: account })); } catch (e) { throw new Error('Simulation failed, nothing was sent. ' + CH().decodeErr(e)); }
+      try { await withRead(r => target.connect(r)[fn].staticCall(...args, { ...ov, from: account })); } catch (e) { throw new Error('Simulation failed, nothing was sent. ' + CH().decodeErr(e)); }
       b.innerHTML = '<i>…</i> Confirm in wallet';
-      const tx = await CH().sendTx(portal, 'swapExactInput', [params], { value: 0n }, account);
+      const tx = await CH().sendTx(target, fn, args, ov, account);
       b.innerHTML = '<i>…</i> Confirming';
       const rc = await CH().waitTx(tx); if (!rc || rc.status !== 1) throw new Error('The trade failed on-chain.');
       msg(`Done. <a href="${esc(C.explorer)}/tx/${esc(tx.hash)}" target="_blank" rel="noopener noreferrer">View on BscScan</a>`, true);
@@ -89,6 +102,13 @@ function mount(box, t) {
     } finally { busy = false; await balance(); setBtn(); }
   }
 
+  box.querySelectorAll('.trpool').forEach(x => x.onclick = async () => {
+    const s2 = findStock(x.dataset.p); if (!s2 || busy) return;
+    stock = s2; Q = E.getAddress(s2.address); if (dec[Q] == null) dec[Q] = 18;
+    box.querySelectorAll('.trpool').forEach(y => y.classList.toggle('on', y === x));
+    try { dec[Q] = Number(await withRead(r => new E.Contract(Q, ERC20, r).decimals())); } catch {}
+    const p = pair(); $('#trPayLbl').textContent = `Pay (${p.inSym})`; $('#trUnit').textContent = p.inSym; $('#trAmt').value = ''; quote(); balance();
+  });
   box.querySelectorAll('.trtab').forEach(x => x.onclick = () => {
     side = x.dataset.s; box.querySelectorAll('.trtab').forEach(y => y.classList.toggle('on', y === x));
     const p = pair(); $('#trPayLbl').textContent = `Pay (${p.inSym})`; $('#trUnit').textContent = p.inSym; $('#trAmt').value = ''; quote(); balance();
