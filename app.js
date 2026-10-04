@@ -285,7 +285,7 @@ function setMode(m) { STATE.mode = m; $('#tabFlap').classList.toggle('on', m ===
   $('#tabFlap').setAttribute('aria-selected', m === 'flap'); $('#tabMulti').setAttribute('aria-selected', m === 'multi'); (m === 'flap' ? modeFlap : modeMulti)(); }
 $('#tabFlap').onclick = () => setMode('flap'); $('#tabMulti').onclick = () => setMode('multi');
 function renderFeed() {
-  renderList();
+  renderList(); renderTokView(); if (STATE.ctx) checkGrad();
   const { tokens, ctx } = STATE, f = $('#feed');
   if (!ctx || !tokens.length) { f.innerHTML = '<div class="row"><div class="t">' + (STATE.status === 'live' ? 'No launches yet. Tokens launched on Stockz appear here.' : 'Loading launches from BNB Chain…') + '</div></div>'; return; }
   // launches (a Multi-pair launch = same creator, name and ticker on several stocks, grouped into one line)
@@ -329,6 +329,97 @@ function renderList() {
   if (tl) tl.addEventListener('click', e => { const r = e.target.closest('.tl-row'); if (!r) return; select(r.dataset.id); const el = document.querySelector(`#map [data-id="${CSS.escape(r.dataset.id)}"]`) || document.querySelector(`[data-id="${CSS.escape(r.dataset.id)}"]:not(.tl-row)`); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }); renderList(); });
   document.querySelectorAll('.tl-tab').forEach(b => b.addEventListener('click', () => { listTab = b.dataset.tab; document.querySelectorAll('.tl-tab').forEach(x => x.classList.toggle('on', x === b)); renderList(); }));
   window.addEventListener('stockz:wallet', renderList); }
+// ---------- Tokens page: New / Trending / Graduated / Mine, pair filter, search, trade drawer ----------
+const PCS_V2_FACTORY = '0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73';   // PancakeSwap V2 factory on BSC
+let tvTab = 'new', tvPair = '', view = 'map', gradBusy = false;
+const stockAddr = t => { const s = (C.stockTokens || []).find(x => x.t === t); return s ? s.address : null; };
+const pairCol = q => { const L = q && LOTS.find(l => l.s.t === q); return L ? L.col : '#cdd2d8'; };
+// Graduated = the token has liquidity in its PancakeSwap V2 pair (read on-chain; unknown stays unknown)
+async function checkGrad() {
+  const CH = window.StockzChain, E = window.ethers; if (gradBusy || !CH || !E) return; gradBusy = true;
+  try {
+    const now = Date.now();
+    const todo = (STATE.tokens || []).filter(t => t.quote && t.grad !== true && (!t.gradAt || now - t.gradAt > 300000)).slice(0, 40);
+    await Promise.all(todo.map(async t => {
+      try {
+        const q = stockAddr(t.quote); if (!q) return;
+        const pair = await CH.withRead(r => new E.Contract(PCS_V2_FACTORY, ['function getPair(address,address) view returns (address)'], r).getPair(t.token, q));
+        if (!pair || /^0x0{40}$/i.test(pair)) { t.grad = false; t.gradAt = now; return; }
+        const P = ['function getReserves() view returns (uint112,uint112,uint32)', 'function token0() view returns (address)'];
+        const [res, t0] = await CH.withRead(r => { const c = new E.Contract(pair, P, r); return Promise.all([c.getReserves(), c.token0()]); });
+        const mine = String(t0).toLowerCase() === t.token.toLowerCase() ? res[0] : res[1];
+        t.grad = mine > 0n; t.pool = pair; t.gradAt = now;
+      } catch { /* unknown: leave as is */ }
+    }));
+  } finally { gradBusy = false; }
+  if (view === 'tokens') renderTokView();
+}
+function tvRows() {
+  const W = window.StockzWallet && window.StockzWallet.state(), me = W && W.account ? W.account.toLowerCase() : null;
+  const q = ($('#tvQ') && $('#tvQ').value || '').trim().toLowerCase();
+  let rows = (STATE.tokens || []).slice();
+  if (tvPair) rows = rows.filter(t => t.quote === tvPair);
+  if (q) rows = rows.filter(t => [t.name, t.symbol, t.token, t.quote || '', (LOTS.find(l => l.s.t === t.quote) || { s: {} }).s.n || ''].some(v => String(v).toLowerCase().includes(q)));
+  if (tvTab === 'mine') rows = me ? rows.filter(t => (t.creator || '').toLowerCase() === me) : [];
+  if (tvTab === 'grad') rows = rows.filter(t => t.grad === true);
+  if (tvTab === 'trending') rows.sort((a, b) => (b.recent - a.recent) || (b.transfers - a.transfers) || (b.block - a.block));
+  else rows.sort((a, b) => b.block - a.block);
+  return { rows, me };
+}
+function renderTokView() {
+  $('#vnCount').textContent = (STATE.tokens || []).length;
+  if (view !== 'tokens') return;
+  const { ctx } = STATE, grid = $('#tvGrid');
+  // pair chips: All + every stock that has at least one Stockz token
+  const used = [...new Set((STATE.tokens || []).map(t => t.quote).filter(Boolean))].sort();
+  $('#tvPairs').innerHTML = `<button type="button" class="tv-chip${tvPair ? '' : ' on'}" data-p="">All pairs</button>` + used.map(p => `<button type="button" class="tv-chip${tvPair === p ? ' on' : ''}" data-p="${esc(p)}" style="--c:${pairCol(p)}"><i></i>${esc(p)}</button>`).join('');
+  if (!ctx) { grid.innerHTML = '<div class="tl-empty">Loading launches from BNB Chain…</div>'; return; }
+  const { rows, me } = tvRows();
+  if (!rows.length) {
+    grid.innerHTML = `<div class="tl-empty">${tvTab === 'mine' && !me ? 'Connect your wallet to see your tokens.' : tvTab === 'grad' ? 'No graduated tokens yet. A token graduates when its PancakeSwap pool gets liquidity.' : 'No tokens found.'}</div>`; return;
+  }
+  grid.innerHTML = rows.map(t => {
+    const col = pairCol(t.quote), tier = TIERS[t._tier || 0], h = t.activityError ? '–' : window.FlapChain.holders(t);
+    const st = t.grad === true ? '<span class="tv-st g">🎓 Graduated</span>' : t.grad === false ? '<span class="tv-st">Bonding curve</span>' : '';
+    return `<div class="tv-card" data-id="${esc(t.id)}" style="--c:${col}">
+      <div class="tv-top"><span class="tl-av" style="background:${col}">${esc(t.symbol.slice(0, 2).toUpperCase())}</span>
+        <div class="tv-nm"><b>${esc(t.name)}</b><small>$${esc(t.symbol)} · ${esc(ago(ctx.nowTs - t.ts))}</small></div>
+        <em class="tv-pair">${esc(t.quote || 'island')}</em></div>
+      <div class="tv-stats"><span>👤 <b>${h}</b> holders</span><span>🔁 <b>${t.activityError ? '–' : t.transfers}</b> transfers</span><span>${t.recent > 0 ? '🎆 <b>' + t.recent + '</b> in 15m' : '🏠 ' + esc(tier.name)}</span></div>
+      <div class="tv-foot">${st}<button type="button" class="btn tv-trade" data-id="${esc(t.id)}">Trade</button></div></div>`;
+  }).join('');
+}
+function openDrawer(id) {
+  const t = (STATE.tokens || []).find(x => x.id === id); if (!t) return;
+  const { ctx } = STATE, h = t.activityError ? 'unavailable' : window.FlapChain.holders(t), col = pairCol(t.quote);
+  $('#tvTitle').textContent = `${t.name} ($${t.symbol})`;
+  $('#tvBody').innerHTML = `<div class="head"><div class="av" style="background:${col}">${esc(t.symbol.slice(0, 2).toUpperCase())}</div><div><div class="nm">${esc(t.name)}</div><div class="sub">$${esc(t.symbol)} · paired with ${esc(t.quote || 'unknown')}</div></div></div>
+    <div class="tv-ca"><code>${esc(t.token)}</code><button type="button" class="wm-copy" id="tvCopy">COPY</button></div>
+    <div class="stats"><div>Holders<b>${h}</b></div><div>Transfers<b>${t.activityError ? 'unavailable' : t.transfers}</b></div><div>Launched<b>${esc(ago(ctx.nowTs - t.ts))}</b></div><div>Status<b>${t.grad === true ? 'Graduated' : t.grad === false ? 'Bonding curve' : 'checking…'}</b></div><div>Creator<b>${esc(short(t.creator || ''))}</b></div><div>Building<b>${esc(TIERS[t._tier || 0].name)}</b></div></div>
+    <div class="acts"><a class="btn" href="${esc(C.explorer)}/token/${esc(t.token)}" target="_blank" rel="noopener noreferrer">BscScan</a><button type="button" class="btn" id="tvMap">Show on map</button></div>
+    <div id="tvTrade"></div>`;
+  $('#tvCopy').onclick = async e => { try { await navigator.clipboard.writeText(t.token); e.target.textContent = 'COPIED'; } catch {} };
+  $('#tvMap').onclick = () => { closeDrawer(); setView('map'); select(t.id); const el = document.querySelector(`#map [data-id="${CSS.escape(t.id)}"]`); if (el) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }); };
+  if (window.StockzTrade && t.quote) window.StockzTrade.mount($('#tvTrade'), t); else $('#tvTrade').innerHTML = '<div class="mnote">Trading needs a detected stock pair.</div>';
+  $('#tvDrawer').hidden = false; document.body.classList.add('lock');
+}
+function closeDrawer() { $('#tvDrawer').hidden = true; document.body.classList.remove('lock'); }
+function setView(v) {
+  view = v; document.querySelectorAll('.vtab').forEach(b => b.classList.toggle('on', b.dataset.view === v));
+  $('#tokview').hidden = v !== 'tokens'; $('#stage').hidden = v === 'tokens'; const tl = $('#tools'); if (tl) tl.hidden = v === 'tokens';
+  if (location.hash !== (v === 'tokens' ? '#tokens' : '')) history.replaceState(null, '', v === 'tokens' ? '#tokens' : location.pathname);
+  if (v === 'tokens') { renderTokView(); checkGrad(); }
+}
+{ document.querySelectorAll('.vtab').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
+  document.querySelectorAll('.tv-tab').forEach(b => b.addEventListener('click', () => { tvTab = b.dataset.k; document.querySelectorAll('.tv-tab').forEach(x => x.classList.toggle('on', x === b)); renderTokView(); }));
+  $('#tvQ').addEventListener('input', renderTokView);
+  $('#tvPairs').addEventListener('click', e => { const c = e.target.closest('.tv-chip'); if (!c) return; tvPair = c.dataset.p; renderTokView(); });
+  $('#tvGrid').addEventListener('click', e => { const c = e.target.closest('[data-id]'); if (c) openDrawer(c.dataset.id); });
+  $('#tvClose').onclick = closeDrawer; $('#tvDrawer').addEventListener('click', e => { if (e.target.id === 'tvDrawer') closeDrawer(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#tvDrawer').hidden) closeDrawer(); });
+  window.addEventListener('stockz:wallet', renderTokView);
+  window.StockzView = { setView, openDrawer };
+  if (location.hash === '#tokens') setTimeout(() => setView('tokens'), 0); }
 function renderClocks() {
   const s = applySkyLite(); const SHORT = { US: 'NY', HK: 'HK', KR: 'SEL' };
   $('#clocks').innerHTML = ['US','HK','KR'].map(k => `<div class="clock" title="${MARKETS[k].n} ${s[k].open ? 'open' : 'closed'}"><span class="led" style="background:${s[k].open ? '#4cd964' : '#ff5a4e'}"></span><span class="cn">${MARKETS[k].n}</span><span class="cs">${SHORT[k]}</span> ${s[k].time}<span class="co"> ${s[k].open ? 'open' : 'closed'}</span></div>`).join('');

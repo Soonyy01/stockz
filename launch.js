@@ -30,9 +30,20 @@ async function sendTx(c, fn, args, ov = {}, from) {
   try { const g = await withRead(r => c.connect(r)[fn].estimateGas(...args, { ...ov, from })); gasLimit = g * 13n / 10n; } catch (e) { if (isRevert(e)) throw e; }
   return c[fn](...args, gasLimit ? { ...ov, gasLimit } : ov);
 }
+// wait for the receipt: poll every public RPC and the wallet at the same time, first answer wins (never hangs on one slow RPC)
 async function waitTx(tx) {
-  try { const rc = await withRead(r => r.waitForTransaction(tx.hash, 1, 240000)); if (rc) return rc; } catch {}
-  return tx.wait();
+  const deadline = Date.now() + 300000;
+  const poll = (async () => {
+    while (Date.now() < deadline) {
+      for (let i = 0; i < C.rpcUrls.length; i++) {
+        try { const rc = await prov(i).getTransactionReceipt(tx.hash); if (rc) return rc; } catch {}
+      }
+      await new Promise(r => setTimeout(r, 2500));
+    }
+    throw new Error('Still waiting for confirmation. Check the transaction on BscScan.');
+  })();
+  const viaWallet = (async () => { try { const rc = await tx.wait(); if (rc) return rc; } catch {} return poll; })();
+  return Promise.race([poll, viaWallet]);
 }
 const ERR = {
   '0x9a5c8a92': 'This stock is not allowed as a pair by the contract (QuoteTokenNotAllowed).',
@@ -365,7 +376,8 @@ async function onSubmit(ev) {
     }
     log(`🎉 Done. ${done.length} token${done.length > 1 ? 's' : ''} launched. ${done.length > 1 ? 'They appear' : 'It appears'} on the map after the next refresh.`);
     window.dispatchEvent(new CustomEvent('stockz:launched', { detail: done }));
-    const li = log(''); const rb = document.createElement('button'); rb.type = 'button'; rb.className = 'btn'; rb.textContent = 'Refresh the map'; rb.onclick = () => location.reload(); li.appendChild(rb);
+    const li = log(''); const rb = document.createElement('button'); rb.type = 'button'; rb.className = 'btn'; rb.textContent = 'View my tokens';
+    rb.onclick = () => { close(); if (window.StockzView) { window.StockzView.setView('tokens'); const m = document.querySelector('.tv-tab[data-k="mine"]'); if (m) m.click(); } }; li.appendChild(rb);
   } catch (e) {
     log(e && e.cancelled ? 'Login was cancelled.' : '❌ ' + decodeErr(e));
     if (done.length) log(`${done.length} of ${f.stocks.length} launches finished before the error. Nothing else was sent.`);
