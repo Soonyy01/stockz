@@ -273,6 +273,8 @@ async function launchOne(f, stock, log) {
     try { const p = portal.interface.parseLog(lg); if (p && p.name === 'TokenCreated') token = p.args.token; } catch {}
   }
   const tokenAddr = token || address;
+  // record the launch in the Stockz index (the server re-checks it on BNB Chain); retried a few times, never blocks the flow
+  (async () => { for (let i = 0; i < 4; i++) { try { const r = await fetch('/api/launches', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tx: tx.hash }) }); if (r.ok || r.status === 503 || r.status === 422) return; } catch {} await new Promise(r => setTimeout(r, 4000 * (i + 1))); } })();
   if (buyAfter > 0n) {
     try { await buyRightAfter(quote, tokenAddr, buyAfter, stock, f, log); }
     catch (e) { console.warn('[Stockz] buy after launch:', e); log(`⚠ Token launched, but the initial buy did not go through: ${decodeErr(e)} You can buy it from its building on the map.`); }

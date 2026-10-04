@@ -131,14 +131,47 @@ async function collectLaunches(from, to, tsOf, onProgress) {
   return [...byTok.values()];
 }
 
+// ---------- launch index (/api/launches): every verified Stockz launch, no time limit ----------
+const INDEX_API = "/api/launches";
+async function fetchIndex() {
+  try {
+    const r = await fetch(INDEX_API, { cache: "no-store" }); if (!r.ok) return null;
+    const j = await r.json(); return Array.isArray(j.launches) ? j.launches : null;
+  } catch { return null; }
+}
+const tickerOf = addr => { const a = String(addr || "").toLowerCase(), s = (C.stockTokens || []).find(x => x.address.toLowerCase() === a); return s ? s.t : null; };
+function mergeIndex(list, idx) {
+  if (!idx) return;
+  const byTok = new Map(list.map(t => [t.token.toLowerCase(), t])), cc = loadCache();
+  for (const r of idx) {
+    const k = String(r.token || "").toLowerCase(); if (!/^0x[0-9a-f]{40}$/.test(k)) continue;
+    let t = byTok.get(k);
+    if (!t) { t = { token: k, id: k, creator: r.creator || null, name: r.name, symbol: r.symbol, ts: r.ts, block: r.block, tx: r.tx, balances: new Map(), transfers: 0, lastBlock: 0, recent: 0, rb: [] }; list.push(t); byTok.set(k, t); }
+    t.stockz = true; t.indexed = true; t.quote = tickerOf(r.quote) || t.quote;
+    t.name = t.name || r.name || "Unnamed"; t.symbol = t.symbol || r.symbol || "?"; t.creator = t.creator || r.creator || null;
+    cc[k] = { s: 1, b: t.block, q: t.quote || "", n: t.name, y: t.symbol, c: t.creator || "" };
+  }
+}
+// tokens found by the chain scan but missing from the index are sent there (the server re-verifies them)
+function reportToIndex(tokens) {
+  const miss = tokens.filter(t => t.stockz && !t.indexed && t.tx).slice(0, 10);
+  for (const t of miss) fetch(INDEX_API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tx: t.tx }) }).then(r => { if (r.ok) t.indexed = true; }).catch(() => {});
+}
+
 async function loadTokens(ctx, onUpdate, onProgress) {
   const from = Math.max(0, ctx.latest - Math.ceil(C.lookbackHours * 3600 / ctx.spb));
   const created = await collectLaunches(from, ctx.latest, b => Math.round(ctx.nowTs - (ctx.latest - b) * ctx.spb), onProgress);
   const seen = new Set(); const list = [];
   created.sort((a, b) => b.block - a.block);
   for (const t of created) { const k = t.token.toLowerCase(); if (!seen.has(k)) { seen.add(k); list.push({ ...t, id: k, balances: new Map(), transfers: 0, lastBlock: 0, recent: 0, rb: [] }); } }
-  await scanTxs(list, onProgress);
-  const tokens = list.filter(t => t.stockz).slice(0, C.maxTokens);
+  const idx = await fetchIndex(); const hasIndex = !!idx;
+  mergeIndex(list, idx);
+  list.sort((a, b) => b.block - a.block);
+  const found = () => list.filter(t => t.stockz).slice(0, C.maxTokens);
+  if (found().length) onUpdate(found(), created.length);
+  await scanTxs(list, onProgress, () => onUpdate(found(), created.length));
+  const tokens = found();
+  if (hasIndex) reportToIndex(tokens);
   onUpdate(tokens, created.length);
   // Transfer logs -> holders and activity (standard ERC-20 Transfer, batches of 25 tokens)
   ctx.scanned = ctx.latest;
@@ -146,8 +179,11 @@ async function loadTokens(ctx, onUpdate, onProgress) {
   const batches = []; for (let i = 0; i < tokens.length; i += 25) batches.push(tokens.slice(i, i + 25));
   let bi = 0;
   for (const b of batches) {
-    const start = Math.min(...b.map(t => t.block));
-    try { await getLogsChunked({ address: b.map(t => t.token), topics: [T_TRANSFER] }, start, ctx.latest, logs => {
+    const floor = ctx.latest - Math.ceil(7 * 86400 / ctx.spb);
+    for (const t of b) if (t.block < floor) t.activityError = true;   // older than 7 days: activity not scanned (shown as unavailable, never guessed)
+    const live = b.filter(t => !t.activityError); if (!live.length) { bi++; continue; }
+    const start = Math.min(...live.map(t => t.block));
+    try { await getLogsChunked({ address: live.map(t => t.token), topics: [T_TRANSFER] }, start, ctx.latest, logs => {
       for (const l of logs) {
         const t = byId.get(l.address.toLowerCase()); if (!t || !l.topics || l.topics.length !== 3) continue;
         const f = "0x" + l.topics[1].slice(26), to = "0x" + l.topics[2].slice(26);
@@ -159,7 +195,7 @@ async function loadTokens(ctx, onUpdate, onProgress) {
     }, p => onProgress && onProgress("Reading activity", (bi + p) / batches.length));
     } catch (e) {
       // Fail closed for THIS batch only: its holder/activity numbers are unknown, never guessed.
-      for (const t of b) { t.activityError = true; t.balances = new Map(); t.transfers = 0; t.lastBlock = 0; t.recent = 0; t.rb = []; }
+      for (const t of live) { t.activityError = true; t.balances = new Map(); t.transfers = 0; t.lastBlock = 0; t.recent = 0; t.rb = []; }
     }
     bi++; onUpdate(tokens, created.length);
   }
@@ -182,7 +218,10 @@ async function refresh(ctx, tokens, onUpdate) {
     const k = t.token.toLowerCase(); if (have.has(k)) continue; have.add(k);
     fresh.push({ ...t, id: k, balances: new Map(), transfers: 0, lastBlock: 0, recent: 0, rb: [] });
   }
-  if (fresh.length) await scanTxs(fresh, null);
+  const idx = await fetchIndex();
+  if (idx) { const before = new Set(fresh.map(t => t.id)); mergeIndex(fresh, idx.filter(r => !have.has(String(r.token).toLowerCase()) || before.has(String(r.token).toLowerCase()))); }
+  if (fresh.length) await scanTxs(fresh.filter(t => !t.indexed), null);
+  if (idx) reportToIndex(fresh);
   const all = fresh.filter(t => t.stockz).sort((a, b) => b.block - a.block).concat(tokens).slice(0, C.maxTokens);
   const byId = new Map(all.map(t => [t.id, t]));
   for (let i = 0; i < all.length; i += 25) {
@@ -210,36 +249,63 @@ async function refresh(ctx, tokens, onUpdate) {
 // Stockz launches carry a marker: newTokenV6 called on the Portal with a salt starting with "STKZ" (0x53544b5a).
 // The pair is the one known stock address that appears in the same calldata.
 const STKZ = "53544b5a", SEL_V6 = "0x8cb5772c";
-async function scanTxs(tokens, onProgress) {
+// scan results are remembered per browser (token -> not Stockz / Stockz + pair, name, ticker, creator), so reloads are fast
+const CK = "stz-scan-v2";
+let cache = null;
+function loadCache() { if (cache) return cache; try { cache = JSON.parse(localStorage.getItem(CK) || "{}") || {}; } catch { cache = {}; } return cache; }
+function saveCache(list) {
+  try { const keep = {}, min = Math.min(...list.map(t => t.block)) - 1; for (const [k, v] of Object.entries(cache || {})) if ((v.b || 0) >= min) keep[k] = v; cache = keep; localStorage.setItem(CK, JSON.stringify(keep)); } catch {}
+}
+async function scanTxs(tokens, onProgress, onFound) {
   const known = (C.stockTokens || []).map(s => ({ t: s.t, word: "000000000000000000000000" + s.address.slice(2).toLowerCase() }));
-  const portal = C.portal.toLowerCase();
-  for (let i = 0; i < tokens.length; i += 40) {
-    const part = tokens.slice(i, i + 40);
-    const txs = await rpcBatch(part.map(t => ({ method: "eth_getTransactionByHash", params: [t.tx] })));
-    part.forEach((t, k) => {
-      const tx = txs[k]; if (!tx || typeof tx.input !== "string") return;
-      const inp = tx.input.toLowerCase();
-      // find the newTokenV6 call: directly at the start, or wrapped inside a smart-wallet call
-      let at = inp.startsWith(SEL_V6) ? 2 : -1;
-      if (at < 0) { let i = inp.indexOf(SEL_V6.slice(2)); while (i > 0 && i % 2 !== 0) i = inp.indexOf(SEL_V6.slice(2), i + 1); at = i; }
-      const salt = at >= 0 ? inp.slice(at + 8 + 5 * 64, at + 8 + 6 * 64) : "";   // tuple head: offset, name, symbol, meta, dexThresh, salt
-      t.stockz = at >= 0 && salt.startsWith(STKZ) && ((tx.to || "").toLowerCase() === portal || at > 2);
-      if (!t.stockz) return;
-      if (!t.creator && tx.from) t.creator = String(tx.from).toLowerCase();
-      // read name, ticker and pair straight from the launch call
-      let p = null;
-      if (IFACE) { try { p = IFACE.decodeFunctionData("newTokenV6", "0x" + inp.slice(at))[0]; } catch {} }
-      if (p) {
-        if (!t.name) t.name = clean(p.name).slice(0, 32) || "Unnamed";
-        if (!t.symbol) t.symbol = clean(p.symbol).slice(0, 12) || "?";
-        const q = String(p.quoteToken || "").toLowerCase(), hit = (C.stockTokens || []).find(s => s.address.toLowerCase() === q);
-        if (hit) t.quote = hit.t;
-      }
-      if (!t.quote) { const hits = known.filter(x => inp.includes(x.word)); if (hits.length === 1) t.quote = hits[0].t; }
-      if (!t.name) t.name = "Unnamed"; if (!t.symbol) t.symbol = "?";
-    });
-    onProgress && onProgress("Finding Stockz launches", Math.min(1, (i + 40) / tokens.length));
+  const portal = C.portal.toLowerCase(), cc = loadCache();
+  const todo = [];
+  for (const t of tokens) {
+    const v = cc[t.token.toLowerCase()];
+    if (!v) { todo.push(t); continue; }
+    t.stockz = !!v.s;
+    if (v.s) { t.quote = v.q || t.quote; t.name = t.name || v.n || "Unnamed"; t.symbol = t.symbol || v.y || "?"; t.creator = t.creator || v.c || null; }
   }
+  if (onFound && tokens.some(t => t.stockz)) onFound();
+  todo.sort((a, b) => b.block - a.block);                         // newest first: fresh launches show up right away
+  const batches = []; for (let i = 0; i < todo.length; i += 40) batches.push(todo.slice(i, i + 40));
+  let done = 0, next = 0;
+  const work = async () => {
+    while (next < batches.length) {
+      const part = batches[next++];
+      const txs = await rpcBatch(part.map(t => ({ method: "eth_getTransactionByHash", params: [t.tx] })));
+      let hit = false;
+      part.forEach((t, k) => {
+        const tx = txs[k]; if (!tx || typeof tx.input !== "string") return;   // unknown: not cached, retried next time
+        const inp = tx.input.toLowerCase();
+        // find the newTokenV6 call: directly at the start, or wrapped inside a smart-wallet call
+        let at = inp.startsWith(SEL_V6) ? 2 : -1;
+        if (at < 0) { let i = inp.indexOf(SEL_V6.slice(2)); while (i > 0 && i % 2 !== 0) i = inp.indexOf(SEL_V6.slice(2), i + 1); at = i; }
+        const salt = at >= 0 ? inp.slice(at + 8 + 5 * 64, at + 8 + 6 * 64) : "";   // tuple head: offset, name, symbol, meta, dexThresh, salt
+        t.stockz = at >= 0 && salt.startsWith(STKZ) && ((tx.to || "").toLowerCase() === portal || at > 2);
+        if (!t.stockz) { cc[t.token.toLowerCase()] = { s: 0, b: t.block }; return; }
+        hit = true;
+        if (!t.creator && tx.from) t.creator = String(tx.from).toLowerCase();
+        let p = null;
+        if (IFACE) { try { p = IFACE.decodeFunctionData("newTokenV6", "0x" + inp.slice(at))[0]; } catch {} }
+        if (p) {
+          if (!t.name) t.name = clean(p.name).slice(0, 32) || "Unnamed";
+          if (!t.symbol) t.symbol = clean(p.symbol).slice(0, 12) || "?";
+          const q = String(p.quoteToken || "").toLowerCase(), h = (C.stockTokens || []).find(s => s.address.toLowerCase() === q);
+          if (h) t.quote = h.t;
+        }
+        if (!t.quote) { const hits = known.filter(x => inp.includes(x.word)); if (hits.length === 1) t.quote = hits[0].t; }
+        if (!t.name) t.name = "Unnamed"; if (!t.symbol) t.symbol = "?";
+        cc[t.token.toLowerCase()] = { s: 1, b: t.block, q: t.quote || "", n: t.name, y: t.symbol, c: t.creator || "" };
+      });
+      done++;
+      onProgress && onProgress("Finding Stockz launches", Math.min(1, done / batches.length));
+      if (hit && onFound) onFound();
+      if (done % 10 === 0) saveCache(tokens);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, batches.length) }, work));
+  saveCache(tokens);
 }
 function holders(t) {
   let n = 0; const skip = new Set([ZERO, C.portal.toLowerCase(), t.token.toLowerCase()]);

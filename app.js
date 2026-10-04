@@ -314,7 +314,7 @@ function renderList() {
   let rows = (tokens || []).slice().sort((a, b) => b.block - a.block);
   if (listTab === 'mine') rows = me ? rows.filter(t => (t.creator || '').toLowerCase() === me) : [];
   $('#tlCount').textContent = (tokens || []).length;
-  if (!ctx) { box.innerHTML = '<div class="tl-empty">Loading launches from BNB Chain…</div>'; return; }
+  if (!ctx || (STATE.status !== 'live' && !rows.length)) { box.innerHTML = `<div class="tl-empty">Reading launches from BNB Chain… ${esc(STATE.prog || '')}</div>`; return; }
   if (!rows.length) { box.innerHTML = `<div class="tl-empty">${listTab === 'mine' ? (me ? 'You have no Stockz launches in the last 24 hours.' : 'Connect your wallet to see your launches.') : 'No launches yet.'}</div>`; return; }
   box.innerHTML = rows.map(t => {
     const L = t.quote && LOTS.find(l => l.s.t === t.quote), col = L ? L.col : '#cdd2d8';
@@ -373,8 +373,8 @@ function renderTokView() {
   // pair chips: All + every stock that has at least one Stockz token
   const used = [...new Set((STATE.tokens || []).map(t => t.quote).filter(Boolean))].sort();
   $('#tvPairs').innerHTML = `<button type="button" class="tv-chip${tvPair ? '' : ' on'}" data-p="">All pairs</button>` + used.map(p => `<button type="button" class="tv-chip${tvPair === p ? ' on' : ''}" data-p="${esc(p)}" style="--c:${pairCol(p)}"><i></i>${esc(p)}</button>`).join('');
-  if (!ctx) { grid.innerHTML = '<div class="tl-empty">Loading launches from BNB Chain…</div>'; return; }
-  const { rows, me } = tvRows();
+  const { rows, me } = ctx ? tvRows() : { rows: [], me: null };
+  if (!ctx || (STATE.status !== 'live' && !rows.length)) { grid.innerHTML = `<div class="tl-empty">Reading launches from BNB Chain… ${esc(STATE.prog || '')}<br><small>New launches appear here as soon as they are found.</small></div>`; return; }
   if (!rows.length) {
     grid.innerHTML = `<div class="tl-empty">${tvTab === 'mine' && !me ? 'Connect your wallet to see your tokens.' : tvTab === 'grad' ? 'No graduated tokens yet. A token graduates when its PancakeSwap pool gets liquidity.' : 'No tokens found.'}</div>`; return;
   }
@@ -487,7 +487,9 @@ async function boot() {
   for (;;) {
     try {
       ctx = await window.FlapChain.init(); STATE.ctx = ctx;
-      STATE.tokens = await window.FlapChain.loadTokens(ctx, tokens => { STATE.tokens = tokens; render(); renderFeed(); });
+      STATE.tokens = await window.FlapChain.loadTokens(ctx, tokens => { STATE.tokens = tokens; render(); renderFeed(); },
+        (label, p) => { STATE.prog = `${label} ${Math.round(p * 100)}%`; if (!STATE.tokens.length) { renderList(); renderTokView(); } });
+      STATE.prog = null;
       STATE.status = 'live'; render(); renderFeed(); break;
     } catch (e) { console.warn('[Stockz] chain read failed, retrying in 20s:', e && e.message); await new Promise(r => setTimeout(r, 20000)); }
   }

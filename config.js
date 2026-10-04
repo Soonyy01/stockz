@@ -16,7 +16,7 @@ window.FLAPCITY_CONFIG = {
   // topic0 = keccak256("TokenCreated(uint256,address,uint256,address,string,string,string)"), verified locally.
   topicTokenCreated: "0x504e7f360b2e5fe33cbaaae4c593bc55305328341bf79009e43e0e3b7f699603",
   lookbackHours: 24,      // how far back to scan for new tokens (older tokens are not drawn)
-  maxTokens: 90,          // newest N tokens are drawn
+  maxTokens: 300,          // newest N tokens are drawn
   // Stock tokens with their BSC addresses, supplied by the Stockz owner from the official list (checksum checked).
   // Used to (1) detect which stock a token is paired with and (2) fill the Multi-pair picker.
   // Missing addresses (not yet supplied): AGPUB, CYPHB, TLT.
