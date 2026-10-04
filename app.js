@@ -462,7 +462,7 @@ async function renderFees(t) {
     let pre = null; if (st0 && st0.account) SM.preparePools(t.token, st0.account).then(g => { pre = g; }).catch(() => {});   // estimate now, so the tap opens the wallet at once
     b.onclick = async () => {
       let st = window.StockzWallet && window.StockzWallet.state();
-      b.disabled = true; b.textContent = 'Confirm in wallet…';
+      b.disabled = true; b.textContent = 'Confirm in wallet… (open your wallet app if it does not appear)';
       try {
         if (!st || !st.signer) { b.textContent = 'Connecting wallet…'; st = await window.StockzWallet.connect(); b.textContent = 'Confirm in wallet…'; }
         const r = await SM.finishPools(t.token, st.signer, st.account, t.tx, pre); b.textContent = `Done: ${r.processed} of ${r.total} pools set up`; setTimeout(() => renderFees(t), 2500); }

@@ -1,1 +1,1 @@
-stockz build 202610041625 - multi-pair: tap per step (wallet opens on mobile), faster, finish from token page
+stockz build 202610041720 - multi-pair: no more stuck steps (RPC time limits + safe gas fallback)

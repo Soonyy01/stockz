@@ -484,4 +484,4 @@ body.lock{overflow:hidden}
 .fees-sub{font:10px Silk;letter-spacing:1px;margin:10px 0 4px;color:#1d1a16}
 #tvFinish{width:100%;margin:4px 0 6px}
 
-.steprow{list-style:none;display:flex;gap:8px;align-items:stretch;margin:8px 0}.steprow .bigbtn{flex:1;margin:0}.steplater{flex:0 0 auto}
+.steprow{list-style:none;display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:8px 0}.stephint{flex-basis:100%;font-size:14px;color:#5a544a}.steprow .bigbtn{flex:1;margin:0}.steplater{flex:0 0 auto}

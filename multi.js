@@ -23,29 +23,44 @@ const DEPLOYER = '0x4e59b44847b379578588920cA78FbF26c0B4956C';
 // explain an on-chain failure: did the wallet send less gas than needed?
 async function failReason(rc, needed) {
   try {
-    const tx = await CH().withRead(r => r.getTransaction(rc.hash));
+    const tx = await rd(r => r.getTransaction(rc.hash));
     const lim = tx && tx.gasLimit, used = rc.gasUsed;
     if (lim && used && used >= lim) return `Your wallet sent it with a gas limit of ${Number(lim).toLocaleString('en-US')}, but about ${Number(needed).toLocaleString('en-US')} is needed (out of gas). In your wallet, set the gas limit to at least ${Number(needed * 12n / 10n).toLocaleString('en-US')} or use "Market"/"Auto" gas, then try again.`;
   } catch {}
   return '';
 }
 const CH = () => window.StockzChain;
+// reads with a time limit per RPC: a slow or silent public RPC must never freeze the launch
+const RP = {}; let rIdx = 0;
+const rp = i => RP[i] || (RP[i] = new E.JsonRpcProvider(C.rpcUrls[i], 56, { staticNetwork: true, batchMaxCount: 1 }));
+async function rd(fn, ms = 8000) {
+  let err; const n = C.rpcUrls.length;
+  for (let k = 0; k < n; k++) {
+    const i = (rIdx + k) % n; let timer;
+    try {
+      const r = await Promise.race([fn(rp(i)), new Promise((_, j) => { timer = setTimeout(() => j(Object.assign(new Error('The network is slow right now.'), { slow: true })), ms); })]);
+      rIdx = i; return r;
+    } catch (e) { err = e; if (!e.slow && CH().isRevert(e)) throw e; }
+    finally { clearTimeout(timer); }
+  }
+  throw err;
+}
 const BATCH = Number(L.v3Batch || 2);
 
 // deadline from the chain's own clock (a wrong phone clock must not break or weaken the deadline)
-async function deadline() { const b = await CH().withRead(r => r.getBlock('latest')); return BigInt((b && b.timestamp) || Math.floor(Date.now() / 1000)) + 1200n; }
+async function deadline() { const b = await rd(r => r.getBlock('latest')); return BigInt((b && b.timestamp) || Math.floor(Date.now() / 1000)) + 1200n; }
 
 // ---------- USD price of a stock token, read on-chain from PancakeSwap (V2 direct / via WBNB, V3) ----------
 // returns { usd, src } or null. A small amount is quoted so a thin pool is not over-read; the creator can always edit it.
 async function stockUsd(stock) {
   const ch = CH(), s = E.getAddress(stock.address), U = L.usdt, W = L.wbnb;
-  let d; try { d = Number(await ch.withRead(r => new E.Contract(s, ERC20, r).decimals())); } catch { return null; }
+  let d; try { d = Number(await rd(r => new E.Contract(s, ERC20, r).decimals())); } catch { return null; }
   const unit = 10n ** BigInt(Math.max(0, d - 3)), scale = Number(10n ** BigInt(d)) / Number(unit);   // quote 0.001 stock
   const toUsd = out => Number(E.formatUnits(out, 18)) * scale;
   const tries = [
-    async () => ({ src: 'PancakeSwap V2', v: (await ch.withRead(r => new E.Contract(L.pcsRouter, V2_ROUTER_ABI, r).getAmountsOut(unit, [s, U]))).at(-1) }),
-    ...[2500, 500, 10000, 100].map(fee => async () => ({ src: 'PancakeSwap V3', v: (await ch.withRead(r => new E.Contract(L.pcsV3Quoter, QUOTER_ABI, r).quoteExactInputSingle.staticCall({ tokenIn: s, tokenOut: U, amountIn: unit, fee, sqrtPriceLimitX96: 0 })))[0] })),
-    async () => ({ src: 'PancakeSwap V2 via BNB', v: (await ch.withRead(r => new E.Contract(L.pcsRouter, V2_ROUTER_ABI, r).getAmountsOut(unit, [s, W, U]))).at(-1) })
+    async () => ({ src: 'PancakeSwap V2', v: (await rd(r => new E.Contract(L.pcsRouter, V2_ROUTER_ABI, r).getAmountsOut(unit, [s, U]))).at(-1) }),
+    ...[2500, 500, 10000, 100].map(fee => async () => ({ src: 'PancakeSwap V3', v: (await rd(r => new E.Contract(L.pcsV3Quoter, QUOTER_ABI, r).quoteExactInputSingle.staticCall({ tokenIn: s, tokenOut: U, amountIn: unit, fee, sqrtPriceLimitX96: 0 })))[0] })),
+    async () => ({ src: 'PancakeSwap V2 via BNB', v: (await rd(r => new E.Contract(L.pcsRouter, V2_ROUTER_ABI, r).getAmountsOut(unit, [s, W, U]))).at(-1) })
   ];
   for (const t of tries) { try { const x = await t(); const usd = toUsd(x.v); if (usd > 0 && isFinite(usd)) return { usd, src: x.src }; } catch {} }
   return null;
@@ -77,7 +92,7 @@ async function launch(f, ctx) {
 
   log('Reading the stock tokens…');
   for (const p of f.liq) {
-    try { p.dec = Number(await ch.withRead(r => new E.Contract(p.stock.address, ERC20, r).decimals())); }
+    try { p.dec = Number(await rd(r => new E.Contract(p.stock.address, ERC20, r).decimals())); }
     catch { throw new Error(`Could not read ${p.stock.t} on BNB Chain. Please retry.`); }
   }
   const stocks = f.liq.map(p => E.getAddress(p.stock.address)), ticks = f.liq.map(p => startTick(tokenUsd / p.usd, p.dec));
@@ -94,18 +109,18 @@ async function launch(f, ctx) {
   log('Simulating the token deployment (nothing is sent yet)…');
   let gas;
   try {
-    const code = await ch.withRead(r => r.getCode(DEPLOYER));
+    const code = await rd(r => r.getCode(DEPLOYER));
     if (!code || code === '0x') throw new Error('The CREATE2 deployer is not available on this network.');
-    const out = await ch.withRead(r => r.call({ from: account, to: DEPLOYER, data }));
+    const out = await rd(r => r.call({ from: account, to: DEPLOYER, data }));
     if (!out || E.getAddress(E.dataSlice(E.zeroPadValue(out, 32), 12)) !== token) throw new Error('The deployment simulation returned an unexpected address.');
-    gas = await ch.withRead(r => r.estimateGas({ from: account, to: DEPLOYER, data }));
+    gas = await rd(r => r.estimateGas({ from: account, to: DEPLOYER, data }));
   } catch (e) { throw new Error('Simulation failed, nothing was sent: ' + (e.message && !e.code ? e.message : ch.decodeErr(e))); }
   const batches = Math.ceil(n / BATCH);
   log(`Confirm the token deployment in your wallet (${batches + 1} confirmations in total)…`);
   const sent = await signer.sendTransaction({ to: DEPLOYER, data, gasLimit: gas * 13n / 10n });
   log(`Sent: <a href="${esc(C.explorer)}/tx/${esc(sent.hash)}" target="_blank" rel="noopener noreferrer">${esc(sent.hash.slice(0, 12))}…</a> waiting for confirmation…`, true);
   const drc = await fastWait(sent).catch(() => null);
-  const made = await ch.withRead(r => r.getCode(token)).catch(() => '0x');
+  const made = await rd(r => r.getCode(token)).catch(() => '0x');
   if (!made || made === '0x') { const why = drc ? await failReason(drc, gas) : ''; throw new Error('The token deployment failed on-chain. ' + why); }
   log(`✅ Token created: <a href="${esc(C.explorer)}/token/${esc(token)}" target="_blank" rel="noopener noreferrer">${esc(token)}</a>`, true);
   register(sent.hash, [], meta);
@@ -124,7 +139,7 @@ async function launch(f, ctx) {
       const ptx = await mt.createPools(BATCH, { gasLimit: limitFor(g) });
       log('Waiting for confirmation…');
       const prc = await fastWait(ptx); if (!prc || prc.status !== 1) throw new Error('Creating pools failed on-chain. ' + (prc ? await failReason(prc, g) : ''));
-      const inf = await ch.withRead(r => mt.connect(r).info());
+      const inf = await rd(r => mt.connect(r).info());
       part.forEach((p, j) => {
         const i = from + j;
         if (inf[2][i] > 0n) { done.push(p.stock.address); log(`✅ Pool live (liquidity locked): <a href="${esc(C.explorer)}/address/${esc(inf[1][i])}" target="_blank" rel="noopener noreferrer">${esc(f.symbol)}/${esc(p.stock.t)}</a>`, true); }
@@ -145,10 +160,17 @@ async function launch(f, ctx) {
 // ---------- fast, tap-driven steps ----------
 const TX_CAP = 16_700_000n;   // BSC per-transaction gas cap is 16,777,216 (BEP-652)
 const limitFor = g => { const l = g * 13n / 10n; return l > TX_CAP ? TX_CAP : l; };
+const FIXED_POOL_GAS = 6_800_000n;   // per pool, measured ~6.0M; used only when no RPC answers in time
 async function poolGas(mt, account) {
   let g;
-  try { g = await CH().withRead(r => mt.connect(r).createPools.estimateGas(BATCH, { from: account })); }
-  catch (e) { throw new Error('Simulation failed, nothing was sent: ' + CH().decodeErr(e)); }
+  try {
+    g = await Promise.race([rd(r => mt.connect(r).createPools.estimateGas(BATCH, { from: account }), 6000),
+      new Promise((_, j) => setTimeout(() => j(Object.assign(new Error('slow'), { slow: true })), 10000))]);   // at most 10 s in total
+  }
+  catch (e) {
+    if (CH().isRevert(e)) throw new Error('Simulation failed, nothing was sent: ' + CH().decodeErr(e));
+    return FIXED_POOL_GAS * BigInt(BATCH);   // network slow: safe fixed limit (only the gas actually used is paid)
+  }
   if (g > TX_CAP) throw new Error('This step needs more gas than BNB Chain allows in one transaction.');
   return g;
 }
@@ -160,7 +182,8 @@ function tapStep(log, label) {
     const later = document.createElement('button'); later.type = 'button'; later.className = 'btn steplater'; later.textContent = 'Later';
     b.onclick = () => { li.remove(); res(true); };
     later.onclick = () => { li.remove(); res(false); };
-    li.append(b, later); b.scrollIntoView({ block: 'nearest' });
+    const hint = document.createElement('small'); hint.className = 'stephint'; hint.textContent = 'After tapping, approve in your wallet. If it does not open by itself, open your wallet app: the request is waiting there.';
+    li.append(b, later, hint); b.scrollIntoView({ block: 'nearest' });
   });
 }
 // receipt as soon as any source has it (wallet or public RPC, polled every second)
@@ -169,7 +192,7 @@ async function fastWait(tx) {
   tx.wait().then(r => { rc = rc || r; }).catch(() => {}).finally(() => { walletDone = true; });
   const t0 = Date.now();
   while (!rc && Date.now() - t0 < 300000) {
-    try { const r = await CH().withRead(p => p.getTransactionReceipt(tx.hash)); if (r) rc = r; } catch {}
+    try { const r = await rd(p => p.getTransactionReceipt(tx.hash)); if (r) rc = r; } catch {}
     if (!rc) await new Promise(r => setTimeout(r, 1000));
   }
   if (!rc) throw new Error('Still waiting for confirmation. Check the transaction on BscScan.');
@@ -187,7 +210,7 @@ async function finishPools(token, signer, account, deployTx, g) {
   if (!g) g = await poolGas(mt, account);
   const tx = await mt.createPools(BATCH, { gasLimit: limitFor(g) });
   const rc = await fastWait(tx); if (!rc || rc.status !== 1) throw new Error('Creating pools failed on-chain. ' + (rc ? await failReason(rc, g) : ''));
-  const inf = await CH().withRead(r => mt.connect(r).info());
+  const inf = await rd(r => mt.connect(r).info());
   const live = inf[0].filter((_, i) => inf[2][i] > 0n);
   if (deployTx) await register(deployTx, live, '');
   return { hash: tx.hash, processed: Number(inf[6]), total: inf[0].length };
@@ -195,7 +218,7 @@ async function finishPools(token, signer, account, deployTx, g) {
 
 // ---------- trading on a pool ----------
 async function quote(path, amountIn) {
-  const r = await CH().withRead(p => new E.Contract(L.pcsV3Quoter, QUOTER_ABI, p).quoteExactInputSingle.staticCall({ tokenIn: path[0], tokenOut: path[1], amountIn, fee: FEE, sqrtPriceLimitX96: 0 }));
+  const r = await rd(p => new E.Contract(L.pcsV3Quoter, QUOTER_ABI, p).quoteExactInputSingle.staticCall({ tokenIn: path[0], tokenOut: path[1], amountIn, fee: FEE, sqrtPriceLimitX96: 0 }));
   return r[0];
 }
 function swapCall(signer, tokenIn, tokenOut, amountIn, minOut, recipient, dl) {
@@ -205,17 +228,17 @@ function swapCall(signer, tokenIn, tokenOut, amountIn, minOut, recipient, dl) {
 
 // ---------- dividends: fees of the locked pools, split between holders and the creator ----------
 async function tokenInfo(token) {
-  const i = await CH().withRead(r => new E.Contract(token, MT_ABI, r).info());
+  const i = await rd(r => new E.Contract(token, MT_ABI, r).info());
   return { stocks: [...i[0]], pools: [...i[1]], positions: [...i[2]], rewards: [...i[3]], holderBps: Number(i[4]), creator: i[5], processed: Number(i[6]) };
 }
 // simulated claim (includes fees not harvested yet)
-async function previewClaim(token, account) { return [...await CH().withRead(r => new E.Contract(token, MT_ABI, r).claim.staticCall({ from: account }))]; }
-async function previewCreator(token, account) { return [...await CH().withRead(r => new E.Contract(token, MT_ABI, r).claimCreator.staticCall({ from: account }))]; }
+async function previewClaim(token, account) { return [...await rd(r => new E.Contract(token, MT_ABI, r).claim.staticCall({ from: account }))]; }
+async function previewCreator(token, account) { return [...await rd(r => new E.Contract(token, MT_ABI, r).claimCreator.staticCall({ from: account }))]; }
 async function send(token, fn, signer, account) {
   const c = new E.Contract(token, MT_ABI, signer);
-  try { await CH().withRead(r => c.connect(r)[fn].staticCall({ from: account })); }
+  try { await rd(r => c.connect(r)[fn].staticCall({ from: account })); }
   catch (e) { throw new Error('Simulation failed, nothing was sent: ' + CH().decodeErr(e)); }
-  const g = await CH().withRead(r => c.connect(r)[fn].estimateGas({ from: account }));
+  const g = await rd(r => c.connect(r)[fn].estimateGas({ from: account }));
   const tx = await CH().sendTx(c, fn, [], {}, account);
   const rc = await CH().waitTx(tx); if (!rc || rc.status !== 1) throw new Error('The transaction failed on-chain. ' + (rc ? await failReason(rc, g) : ''));
   return tx.hash;
