@@ -3,6 +3,10 @@
 const C = window.FLAPCITY_CONFIG;
 const T_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const ZERO = "0x0000000000000000000000000000000000000000";
+const ZERO_TOPIC = "0x" + "0".repeat(64);
+const V6_SIG = 'function newTokenV6((string name, string symbol, string meta, uint8 dexThresh, bytes32 salt, uint8 migratorType, address quoteToken, uint256 quoteAmt, address beneficiary, bytes permitData, bytes32 extensionID, bytes extensionData, uint8 dexId, uint8 lpFeeProfile, uint16 buyTaxRate, uint16 sellTaxRate, uint64 taxDuration, uint64 antiFarmerDuration, uint16 mktBps, uint16 deflationBps, uint16 dividendBps, uint16 lpBps, uint256 minimumShareBalance, address dividendToken, address commissionReceiver, uint8 tokenVersion) params) payable returns (address)';
+const IFACE = window.ethers ? new window.ethers.Interface([V6_SIG]) : null;
+const clean = s => String(s || "").replace(/[\u0000-\u001f\u007f<>]/g, "").trim();
 let rpcIdx = 0;
 
 async function rpc(method, params, tries = 8) {
@@ -106,12 +110,30 @@ async function init() {
   return { latest, nowTs: num(bl.timestamp), spb };
 }
 
+// Two independent ways to find new tokens, merged by address:
+//  1) the Portal's TokenCreated event, 2) the token's mint (Transfer from 0x0 to the Portal), which every launch emits.
+// (2) does not depend on the event layout, so a launch is never missed if the event format changes.
+async function collectLaunches(from, to, tsOf, onProgress) {
+  const byTok = new Map();
+  await getLogsChunked({ address: C.portal, topics: [C.topicTokenCreated] }, from, to, logs => {
+    for (const l of logs) { const t = decodeCreated(l); if (t) byTok.set(t.token.toLowerCase(), t); }
+  }, p => onProgress && onProgress("Reading launches", p * 0.5));
+  const portalTopic = "0x" + "0".repeat(24) + C.portal.slice(2).toLowerCase();
+  try {
+    await getLogsChunked({ topics: [T_TRANSFER, ZERO_TOPIC, portalTopic] }, from, to, logs => {
+      for (const l of logs) {
+        const k = (l.address || "").toLowerCase(); if (!k || byTok.has(k)) continue;
+        const b = num(l.blockNumber);
+        byTok.set(k, { token: k, creator: null, name: null, symbol: null, ts: tsOf(b), block: b, tx: l.transactionHash });
+      }
+    }, p => onProgress && onProgress("Reading launches", 0.5 + p * 0.5));
+  } catch (e) { console.warn("[Stockz] mint scan failed, using launch events only:", e && e.message); }
+  return [...byTok.values()];
+}
+
 async function loadTokens(ctx, onUpdate, onProgress) {
   const from = Math.max(0, ctx.latest - Math.ceil(C.lookbackHours * 3600 / ctx.spb));
-  const created = [];
-  await getLogsChunked({ address: C.portal, topics: [C.topicTokenCreated] }, from, ctx.latest, logs => {
-    for (const l of logs) { const t = decodeCreated(l); if (t) created.push(t); }
-  }, p => onProgress && onProgress("Reading launches", p));
+  const created = await collectLaunches(from, ctx.latest, b => Math.round(ctx.nowTs - (ctx.latest - b) * ctx.spb), onProgress);
   const seen = new Set(); const list = [];
   created.sort((a, b) => b.block - a.block);
   for (const t of created) { const k = t.token.toLowerCase(); if (!seen.has(k)) { seen.add(k); list.push({ ...t, id: k, balances: new Map(), transfers: 0, lastBlock: 0, recent: 0, rb: [] }); } }
@@ -155,10 +177,11 @@ async function refresh(ctx, tokens, onUpdate) {
   const latest = num(await rpc("eth_blockNumber", []));
   if (latest <= ctx.scanned) return tokens;
   const bl = await rpc("eth_getBlockByNumber", [hex(latest), false]);
-  const from = ctx.scanned + 1, have = new Set(tokens.map(t => t.id)), fresh = [];
-  await getLogsChunked({ address: C.portal, topics: [C.topicTokenCreated] }, from, latest, logs => {
-    for (const l of logs) { const t = decodeCreated(l); if (t && !have.has(t.token.toLowerCase())) { have.add(t.token.toLowerCase()); fresh.push({ ...t, id: t.token.toLowerCase(), balances: new Map(), transfers: 0, lastBlock: 0, recent: 0, rb: [] }); } }
-  });
+  const from = ctx.scanned + 1, have = new Set(tokens.map(t => t.id)), fresh = [], nowTs = num(bl.timestamp);
+  for (const t of await collectLaunches(from, latest, b => Math.round(nowTs - (latest - b) * ctx.spb))) {
+    const k = t.token.toLowerCase(); if (have.has(k)) continue; have.add(k);
+    fresh.push({ ...t, id: k, balances: new Map(), transfers: 0, lastBlock: 0, recent: 0, rb: [] });
+  }
   if (fresh.length) await scanTxs(fresh, null);
   const all = fresh.filter(t => t.stockz).sort((a, b) => b.block - a.block).concat(tokens).slice(0, C.maxTokens);
   const byId = new Map(all.map(t => [t.id, t]));
@@ -196,9 +219,24 @@ async function scanTxs(tokens, onProgress) {
     part.forEach((t, k) => {
       const tx = txs[k]; if (!tx || typeof tx.input !== "string") return;
       const inp = tx.input.toLowerCase();
-      const salt = inp.slice(10 + 5 * 64, 10 + 6 * 64);          // tuple head: offset, name, symbol, meta, dexThresh, salt
-      t.stockz = (tx.to || "").toLowerCase() === portal && inp.startsWith(SEL_V6) && salt.startsWith(STKZ);
-      if (t.stockz) { const hits = known.filter(x => inp.includes(x.word)); if (hits.length === 1) t.quote = hits[0].t; }
+      // find the newTokenV6 call: directly at the start, or wrapped inside a smart-wallet call
+      let at = inp.startsWith(SEL_V6) ? 2 : -1;
+      if (at < 0) { let i = inp.indexOf(SEL_V6.slice(2)); while (i > 0 && i % 2 !== 0) i = inp.indexOf(SEL_V6.slice(2), i + 1); at = i; }
+      const salt = at >= 0 ? inp.slice(at + 8 + 5 * 64, at + 8 + 6 * 64) : "";   // tuple head: offset, name, symbol, meta, dexThresh, salt
+      t.stockz = at >= 0 && salt.startsWith(STKZ) && ((tx.to || "").toLowerCase() === portal || at > 2);
+      if (!t.stockz) return;
+      if (!t.creator && tx.from) t.creator = String(tx.from).toLowerCase();
+      // read name, ticker and pair straight from the launch call
+      let p = null;
+      if (IFACE) { try { p = IFACE.decodeFunctionData("newTokenV6", "0x" + inp.slice(at))[0]; } catch {} }
+      if (p) {
+        if (!t.name) t.name = clean(p.name).slice(0, 32) || "Unnamed";
+        if (!t.symbol) t.symbol = clean(p.symbol).slice(0, 12) || "?";
+        const q = String(p.quoteToken || "").toLowerCase(), hit = (C.stockTokens || []).find(s => s.address.toLowerCase() === q);
+        if (hit) t.quote = hit.t;
+      }
+      if (!t.quote) { const hits = known.filter(x => inp.includes(x.word)); if (hits.length === 1) t.quote = hits[0].t; }
+      if (!t.name) t.name = "Unnamed"; if (!t.symbol) t.symbol = "?";
     });
     onProgress && onProgress("Finding Stockz launches", Math.min(1, (i + 40) / tokens.length));
   }

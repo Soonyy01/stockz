@@ -285,6 +285,7 @@ function setMode(m) { STATE.mode = m; $('#tabFlap').classList.toggle('on', m ===
   $('#tabFlap').setAttribute('aria-selected', m === 'flap'); $('#tabMulti').setAttribute('aria-selected', m === 'multi'); (m === 'flap' ? modeFlap : modeMulti)(); }
 $('#tabFlap').onclick = () => setMode('flap'); $('#tabMulti').onclick = () => setMode('multi');
 function renderFeed() {
+  renderList();
   const { tokens, ctx } = STATE, f = $('#feed');
   if (!ctx || !tokens.length) { f.innerHTML = '<div class="row"><div class="t">' + (STATE.status === 'live' ? 'No launches yet. Tokens launched on Stockz appear here.' : 'Loading launches from BNB Chain…') + '</div></div>'; return; }
   // launches (a Multi-pair launch = same creator, name and ticker on several stocks, grouped into one line)
@@ -304,6 +305,30 @@ function renderFeed() {
   ev.sort((a, b) => a.s - b.s);
   f.innerHTML = ev.slice(0, 6).map(e => `<div class="row"><div class="ico">${e.ico}</div><div class="t">${esc(e.txt)}<small>${esc(e.sub)}</small></div></div>`).join('');
 }
+// ---------- token list: every Stockz launch, newest first, with an "Mine" filter ----------
+let listTab = 'all';
+function renderList() {
+  const box = $('#tlist'); if (!box) return;
+  const { tokens, ctx } = STATE;
+  const W = window.StockzWallet && window.StockzWallet.state(), me = W && W.account ? W.account.toLowerCase() : null;
+  let rows = (tokens || []).slice().sort((a, b) => b.block - a.block);
+  if (listTab === 'mine') rows = me ? rows.filter(t => (t.creator || '').toLowerCase() === me) : [];
+  $('#tlCount').textContent = (tokens || []).length;
+  if (!ctx) { box.innerHTML = '<div class="tl-empty">Loading launches from BNB Chain…</div>'; return; }
+  if (!rows.length) { box.innerHTML = `<div class="tl-empty">${listTab === 'mine' ? (me ? 'You have no Stockz launches in the last 24 hours.' : 'Connect your wallet to see your launches.') : 'No launches yet.'}</div>`; return; }
+  box.innerHTML = rows.map(t => {
+    const L = t.quote && LOTS.find(l => l.s.t === t.quote), col = L ? L.col : '#cdd2d8';
+    const tier = TIERS[t._tier || 0], h = t.activityError ? '–' : window.FlapChain.holders(t);
+    return `<button type="button" class="tl-row${STATE.sel === t.id ? ' on' : ''}" data-id="${esc(t.id)}">
+      <span class="tl-av" style="background:${col}">${esc(t.symbol.slice(0, 2).toUpperCase())}</span>
+      <span class="tl-main"><b>${esc(t.name)}</b><small>$${esc(t.symbol)} · ${esc(ago(ctx.nowTs - t.ts))}</small></span>
+      <span class="tl-side"><em style="--c:${col}">${esc(t.quote || 'island')}</em><small>${esc(tier.name)} · ${h} 👤</small></span></button>`;
+  }).join('');
+}
+{ const tl = document.getElementById('tlist');
+  if (tl) tl.addEventListener('click', e => { const r = e.target.closest('.tl-row'); if (!r) return; select(r.dataset.id); const el = document.querySelector(`#map [data-id="${CSS.escape(r.dataset.id)}"]`) || document.querySelector(`[data-id="${CSS.escape(r.dataset.id)}"]:not(.tl-row)`); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }); renderList(); });
+  document.querySelectorAll('.tl-tab').forEach(b => b.addEventListener('click', () => { listTab = b.dataset.tab; document.querySelectorAll('.tl-tab').forEach(x => x.classList.toggle('on', x === b)); renderList(); }));
+  window.addEventListener('stockz:wallet', renderList); }
 function renderClocks() {
   const s = applySkyLite(); const SHORT = { US: 'NY', HK: 'HK', KR: 'SEL' };
   $('#clocks').innerHTML = ['US','HK','KR'].map(k => `<div class="clock" title="${MARKETS[k].n} ${s[k].open ? 'open' : 'closed'}"><span class="led" style="background:${s[k].open ? '#4cd964' : '#ff5a4e'}"></span><span class="cn">${MARKETS[k].n}</span><span class="cs">${SHORT[k]}</span> ${s[k].time}<span class="co"> ${s[k].open ? 'open' : 'closed'}</span></div>`).join('');
